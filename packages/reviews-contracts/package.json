@@ -1,0 +1,30 @@
+{
+	"name": "@bittasker/reviews-contracts",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"test": "vitest run --config vitest.config.ts",
+		"test:watch": "vitest --config vitest.config.ts",
+		"check": "tsc -p tsconfig.json --noEmit"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"peerDependencies": {
+		"@noble/hashes": "^1.8.0",
+		"nostr-tools": "^2.13.0",
+		"zod": "^3.0.0 || ^4.0.0"
+	}
+}
