@@ -1,0 +1,303 @@
+import { OpenAPIHono, createRoute } from '@hono/zod-openapi';
+import { HTTPException } from 'hono/http-exception';
+import { bodyLimit } from 'hono/body-limit';
+import {
+	challengeRoute,
+	attestationRoute,
+	challengeRequestSchema,
+	attestationRequestSchema,
+	issuerRegistryOpenApiSchema,
+	reviewErrorResponseSchema
+} from './contracts';
+import {
+	ReviewApiError,
+	ReviewAttestationService,
+	parseRuntimeConfigFromEnv,
+	parseSlotHmacSecretFromEnv,
+	StaticReviewSettlementRegistry,
+	parseSettlementRegistryFromEnv
+} from './review-attestation-service';
+import { CloudflareReviewStateClient, type ReviewStateNamespace } from './state';
+import { getIssuerRegistry } from './issuer-registry';
+import { z } from 'zod';
+import {
+	RelayReviewNostrPublisher,
+	parseNostrRelaysFromEnv,
+	type ReviewNostrPublisher
+} from './nostr-publisher';
+
+export interface ReviewsAttestationEnv {
+	REVIEW_STATE: ReviewStateNamespace;
+	REVIEW_ATTESTATION_ISSUER_KEY_ID?: string;
+	REVIEW_ATTESTATION_ISSUER_NPUB?: string;
+	REVIEW_ATTESTATION_ISSUER_NSEC?: string;
+	REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON?: string;
+	REVIEWS_SETTLEMENT_REGISTRY_JSON?: string;
+	REVIEW_ATTESTATION_NOSTR_RELAYS_JSON?: string;
+	REVIEW_CHALLENGE_TTL_SECONDS?: string;
+	REVIEW_ATTESTATION_TTL_SECONDS?: string;
+	REVIEW_RATE_LIMIT_WINDOW_SECONDS?: string;
+	REVIEW_SLOT_HMAC_SECRET?: string;
+}
+
+export interface ReviewsAttestationAppOptions {
+	publisher?: ReviewNostrPublisher;
+	nonce?: () => string;
+}
+
+export interface ReviewsAttestationVars {
+	clientIp: string;
+}
+
+function isZodLikeError(error: unknown): boolean {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		'name' in error &&
+		(error as { name?: unknown }).name === 'ZodError' &&
+		'issues' in error &&
+		Array.isArray((error as { issues?: unknown }).issues)
+	);
+}
+
+const issuerRegistryRoute = createRoute({
+	method: 'get',
+	path: '/review-attestation-issuers',
+	responses: {
+		200: {
+			description: 'Issuer registry',
+			content: {
+				'application/json': {
+					schema: issuerRegistryOpenApiSchema
+				}
+			}
+		}
+	}
+});
+
+const healthRoute = createRoute({
+	method: 'get',
+	path: '/health',
+	responses: {
+		200: {
+			description: 'Health check',
+			content: {
+				'application/json': {
+					schema: z.object({ ok: z.literal(true) })
+				}
+			}
+		}
+	}
+});
+
+export function createReviewsAttestationApp(
+	env?: ReviewsAttestationEnv,
+	options: ReviewsAttestationAppOptions = {}
+) {
+	const app = new OpenAPIHono<{ Bindings: ReviewsAttestationEnv; Variables: ReviewsAttestationVars }>();
+
+	app.doc('/openapi.json', {
+		openapi: '3.0.0',
+		info: {
+			title: 'reviews-attestation-backend',
+			version: '0.0.0'
+		}
+	});
+
+	app.use('*', async (c, next) => {
+		const forwardedFor = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+		c.set('clientIp', c.req.header('cf-connecting-ip') ?? forwardedFor ?? '127.0.0.1');
+		await next();
+	});
+
+	app.use(
+		'*',
+		bodyLimit({
+			maxSize: 1024 * 1024, // 1MB
+			onError: (c) => {
+				return c.json(
+					{
+						schemaVersion: 1,
+						status: 'error',
+						code: 'request_invalid',
+						message: 'Payload too large'
+					},
+					413
+				);
+			}
+		})
+	);
+
+	app.onError((error, c) => {
+		if (error instanceof HTTPException && error.status === 400) {
+			return c.json(
+				reviewErrorResponseSchema.parse({
+					schemaVersion: 1,
+					status: 'error',
+					code: 'request_invalid',
+					message: 'Invalid request payload'
+				}),
+				400
+			);
+		}
+
+		return respondWithServiceError(c, error);
+	});
+
+	app.openapi(healthRoute, (c) => c.json({ ok: true }));
+
+	app.openapi(issuerRegistryRoute, (c) => {
+		try {
+			const registry = getIssuerRegistry({
+				...c.env,
+				clock: () => Date.now()
+			});
+			return c.json(registry);
+		} catch (error) {
+			return respondWithServiceError(c, new ReviewApiError(
+				'issuer_unavailable',
+				503,
+				error instanceof Error ? error.message : 'Issuer registry unavailable'
+			)) as any;
+		}
+	});
+
+	app.openAPIRegistry.registerPath(challengeRoute);
+	app.post(challengeRoute.path, async (c) => {
+		try {
+			const body = challengeRequestSchema.parse(await c.req.json());
+			const service = createService(c.env, options);
+			const result = await service.createChallenge(body, {
+				clientIp: c.get('clientIp'),
+				now: Date.now()
+			});
+			return c.json(result);
+		} catch (error) {
+			return respondWithServiceError(c, error) as any;
+		}
+	});
+
+	app.openAPIRegistry.registerPath(attestationRoute);
+	app.post(attestationRoute.path, async (c) => {
+		try {
+			const body = attestationRequestSchema.parse(await c.req.json());
+			const service = createService(c.env, options);
+			const result = await service.issueAttestation(body, {
+				clientIp: c.get('clientIp'),
+				now: Date.now()
+			});
+			return c.json(result);
+		} catch (error) {
+			return respondWithServiceError(c, error) as any;
+		}
+	});
+
+	return app;
+}
+
+function respondWithServiceError(
+	c: {
+		json: (body: unknown, status?: number) => Response;
+		header: (name: string, value: string) => void;
+	},
+	error: unknown
+) {
+	if (error instanceof z.ZodError || error instanceof SyntaxError) {
+		return c.json(
+			reviewErrorResponseSchema.parse({
+				schemaVersion: 1,
+				status: 'error',
+				code: 'request_invalid',
+				message: 'Invalid request payload'
+			}),
+			400
+		);
+	}
+
+	if (isZodLikeError(error)) {
+		return c.json(
+			reviewErrorResponseSchema.parse({
+				schemaVersion: 1,
+				status: 'error',
+				code: 'request_invalid',
+				message: 'Invalid request payload'
+			}),
+			400
+		);
+	}
+
+	if (error instanceof Error && error.name === 'BodyLimitError') {
+		return c.json(
+			reviewErrorResponseSchema.parse({
+				schemaVersion: 1,
+				status: 'error',
+				code: 'request_invalid',
+				message: 'Payload too large'
+			}),
+			413
+		);
+	}
+
+	if (error instanceof ReviewApiError) {
+		console.error(JSON.stringify({
+			level: 'error',
+			code: error.code,
+			status: error.status,
+			message: error.message,
+			retryAfterSeconds: error.retryAfterSeconds,
+			stack: error.stack
+		}));
+
+		if (error.retryAfterSeconds) {
+			c.header('retry-after', String(error.retryAfterSeconds));
+		}
+
+		return c.json(
+			reviewErrorResponseSchema.parse({
+				schemaVersion: 1,
+				status: 'error',
+				code: error.code,
+				message: error.message,
+				...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {})
+			}),
+			error.status
+		);
+	}
+
+	console.error(JSON.stringify({
+		level: 'error',
+		code: 'internal_error',
+		status: 500,
+		message: error instanceof Error ? error.message : 'Unexpected backend error',
+		stack: error instanceof Error ? error.stack : undefined
+	}));
+
+	return c.json(
+		reviewErrorResponseSchema.parse({
+			schemaVersion: 1,
+			status: 'error',
+			code: 'internal_error',
+			message: 'Unexpected backend error'
+		}),
+		500
+	);
+}
+
+function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAppOptions = {}) {
+	const settlementRegistry = new StaticReviewSettlementRegistry(
+		parseSettlementRegistryFromEnv(env.REVIEWS_SETTLEMENT_REGISTRY_JSON)
+	);
+	const publisher =
+		options.publisher ??
+		new RelayReviewNostrPublisher(parseNostrRelaysFromEnv(env.REVIEW_ATTESTATION_NOSTR_RELAYS_JSON), 10_000);
+	return new ReviewAttestationService({
+		state: new CloudflareReviewStateClient(env.REVIEW_STATE),
+		settlementRegistry,
+		publisher,
+		issuerRegistryEnv: env,
+		config: parseRuntimeConfigFromEnv(env),
+		slotHmacSecret: parseSlotHmacSecretFromEnv(env),
+		clock: () => Date.now(),
+		nonce: options.nonce
+	});
+}

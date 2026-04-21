@@ -1,0 +1,25 @@
+name = "reviews-attestation-backend"
+main = "src/index.ts"
+compatibility_date = "2026-03-31"
+compatibility_flags = ["nodejs_compat"]
+minify = false
+workers_dev = true
+
+[vars]
+REVIEW_ATTESTATION_ISSUER_KEY_ID = "reviews-attestation-issuer-v1"
+REVIEW_ATTESTATION_ISSUER_NPUB = ""
+REVIEW_ATTESTATION_ISSUER_NSEC = ""
+REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON = "[]"
+REVIEWS_SETTLEMENT_REGISTRY_JSON = "[]"
+REVIEW_CHALLENGE_TTL_SECONDS = "900"
+REVIEW_ATTESTATION_TTL_SECONDS = "86400"
+REVIEW_RATE_LIMIT_WINDOW_SECONDS = "600"
+REVIEW_SLOT_HMAC_SECRET = ""
+
+[[durable_objects.bindings]]
+name = "REVIEW_STATE"
+class_name = "ReviewStateDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ReviewStateDO"]

@@ -1,0 +1,27 @@
+# Stable identifier for the active attestation signing key.
+REVIEW_ATTESTATION_ISSUER_KEY_ID=reviews-attestation-issuer-v1
+
+# Public Nostr identity of the attestation issuer. Must match the nsec below.
+REVIEW_ATTESTATION_ISSUER_NPUB=
+
+# Private Nostr signing key for the attestation issuer in NIP-19 nsec format.
+REVIEW_ATTESTATION_ISSUER_NSEC=
+
+# Optional explicit issuer registry JSON served by the worker. If set, the active
+# entry must match the configured issuer key id and npub above.
+REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON=[]
+
+# Private settlement registry used by local dev/tests to resolve reviewable
+# contracts/bookings into normalized settlement records.
+REVIEWS_SETTLEMENT_REGISTRY_JSON=[]
+
+# Lifetime in seconds for an issued attestation challenge before it expires.
+REVIEW_CHALLENGE_TTL_SECONDS=900
+
+# Lifetime in seconds for a published attestation before the client should treat
+# it as expired.
+REVIEW_ATTESTATION_TTL_SECONDS=86400
+
+# Sliding window in seconds used by the backend rate limiter for attestation
+# challenge/issuance abuse controls.
+REVIEW_RATE_LIMIT_WINDOW_SECONDS=600

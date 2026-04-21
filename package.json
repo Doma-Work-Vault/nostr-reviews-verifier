@@ -1,0 +1,30 @@
+{
+  "name": "reviews-attestation-backend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@bittasker/reviews-contracts": "file:../packages/reviews-contracts",
+    "@noble/curves": "^1.9.2",
+    "@noble/hashes": "^1.8.0",
+    "hono": "^4.6.20",
+    "nostr-tools": "^2.13.0",
+    "viem": "^2.30.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260320.0",
+    "@hono/zod-openapi": "^0.18.4",
+    "@types/node": "^22.13.1",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8",
+    "wrangler": "^4.10.0"
+  }
+}
