@@ -538,6 +538,7 @@ describe('attestation worker hardening', () => {
 			const issuerNpub = npubEncode(issuerPubkey);
 			const issuerNsec = nsecEncode(new Uint8Array(Buffer.from(issuerPriv.replace(/^0x/, ''), 'hex')));
 			const slotHmacSecret = new Uint8Array(Buffer.from(issuerPriv.replace(/^0x/, ''), 'hex'));
+			const slotHmacSecretHex = Buffer.from(slotHmacSecret).toString('hex');
 			const envState = createInMemoryReviewStateClient();
 			const publisher = new MockReviewNostrPublisher();
 			const env: ReviewsAttestationEnv = {
@@ -545,6 +546,7 @@ describe('attestation worker hardening', () => {
 				REVIEW_ATTESTATION_ISSUER_KEY_ID: 'reviews-attestation-issuer-v1',
 				REVIEW_ATTESTATION_ISSUER_NSEC: issuerNsec,
 				REVIEW_ATTESTATION_ISSUER_NPUB: issuerNpub,
+				REVIEW_SLOT_HMAC_SECRET: slotHmacSecretHex,
 				REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON: JSON.stringify([
 					{
 						keyId: 'reviews-attestation-issuer-v1',

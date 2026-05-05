@@ -216,9 +216,13 @@ function buildService() {
 	const reviewerWallet = privateKeyToAccount(('0x' + '11'.repeat(32)) as `0x${string}`);
 	const settlement = makeSettlement(reviewerPubkey, revieweePubkey, reviewerWallet.address);
 	const issuerPrivHex = '22'.repeat(32);
+		const slotHmacSecret = new Uint8Array(Buffer.from(issuerPrivHex, 'hex'));
+
 	const issuerPubkey = getPublicKey(new Uint8Array(Buffer.from(issuerPrivHex, 'hex')));
 	const publisher = new DeferredPublisher();
 	const service = new ReviewAttestationService({
+		slotHmacSecret,
+
 		state,
 		settlementRegistry: {
 			resolve: () => settlement

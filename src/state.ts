@@ -1,5 +1,4 @@
 import type {
-	IssuerRegistryEntry,
 	IssuerRegistryResponse
 } from './contracts';
 import { normalizeHex, parseHexOrNpub, parseNsecToHex } from './contracts';
@@ -24,6 +23,14 @@ export interface ReviewSlotClaimResult {
 	existing: ReviewIssuedSlotRecord | null;
 }
 
+export interface ReviewIssuedReplySlotRecord {
+	parentReviewEventId: string;
+	replyDraftHash: string;
+	replyEventId: string;
+	attestationEventId: string;
+	issuedAt: number;
+}
+
 export interface ReviewStateClient {
 	checkRateLimit(
 		bucketKey: string,
@@ -33,6 +40,8 @@ export interface ReviewStateClient {
 	): Promise<RateLimitDecision>;
 	getIssuedSlot(slotHash: string): Promise<ReviewIssuedSlotRecord | null>;
 	claimIssuedSlot(record: ReviewIssuedSlotRecord): Promise<ReviewSlotClaimResult>;
+	getIssuedReplySlot(parentReviewEventId: string): Promise<ReviewIssuedReplySlotRecord | null>;
+	claimIssuedReplySlot(record: ReviewIssuedReplySlotRecord): Promise<{ created: boolean; existing: ReviewIssuedReplySlotRecord | null }>;
 }
 
 const slotHashSchema = z.string().regex(/^[a-f0-9]{64}$/i);
@@ -55,6 +64,21 @@ const slotClaimResultSchema = z
 	.object({
 		created: z.boolean(),
 		existing: issuedSlotRecordSchema.nullable()
+	})
+	.strict();
+const issuedReplySlotRecordSchema = z
+	.object({
+		parentReviewEventId: z.string().regex(/^[a-f0-9]{64}$/i),
+		replyDraftHash: z.string().min(1),
+		replyEventId: z.string().min(1),
+		attestationEventId: z.string().min(1),
+		issuedAt: z.number().int().nonnegative()
+	})
+	.strict();
+const replySlotClaimResultSchema = z
+	.object({
+		created: z.boolean(),
+		existing: issuedReplySlotRecordSchema.nullable()
 	})
 	.strict();
 const issuerRegistryEntriesSchema = z.array(
@@ -158,6 +182,23 @@ export class InMemoryReviewStateClient implements ReviewStateClient {
 		this.issuedSlots.set(record.slotHash, clone(record));
 		return { created: true, existing: null };
 	}
+
+	private readonly issuedReplySlots = new Map<string, ReviewIssuedReplySlotRecord>();
+
+	async getIssuedReplySlot(parentReviewEventId: string): Promise<ReviewIssuedReplySlotRecord | null> {
+		return this.issuedReplySlots.has(parentReviewEventId)
+			? clone(this.issuedReplySlots.get(parentReviewEventId)!)
+			: null;
+	}
+
+	async claimIssuedReplySlot(record: ReviewIssuedReplySlotRecord): Promise<{ created: boolean; existing: ReviewIssuedReplySlotRecord | null }> {
+		const existing = this.issuedReplySlots.get(record.parentReviewEventId);
+		if (existing) {
+			return { created: false, existing: clone(existing) };
+		}
+		this.issuedReplySlots.set(record.parentReviewEventId, clone(record));
+		return { created: true, existing: null };
+	}
 }
 
 export function createInMemoryReviewStateClient(): InMemoryReviewStateClient {
@@ -170,10 +211,25 @@ export interface ReviewStateNamespace {
 }
 
 export class CloudflareReviewStateClient implements ReviewStateClient {
+	private failureCount = 0;
+	private lastFailureTime = 0;
+	private readonly circuitBreakerThreshold = 5;
+	private readonly circuitBreakerWindowMs = 60_000; // 1 minute
+
 	constructor(
 		private readonly namespace: ReviewStateNamespace,
 		private readonly globalId = 'global'
 	) {}
+
+	get circuitBreakerOpen(): boolean {
+		if (this.failureCount < this.circuitBreakerThreshold) return false;
+		return Date.now() - this.lastFailureTime < this.circuitBreakerWindowMs;
+	}
+
+	resetCircuitBreaker(): void {
+		this.failureCount = 0;
+		this.lastFailureTime = 0;
+	}
 
 	private async post<T>(path: string, body: unknown): Promise<T> {
 		const stub = this.namespace.get(this.namespace.idFromName(this.globalId));
@@ -189,7 +245,13 @@ export class CloudflareReviewStateClient implements ReviewStateClient {
 			throw new Error(`Review state request failed: ${response.status}`);
 		}
 
+		this.failureCount = 0;
 		return (await response.json()) as T;
+	}
+
+	private recordFailure(): void {
+		this.failureCount++;
+		this.lastFailureTime = Date.now();
 	}
 
 	async checkRateLimit(
@@ -198,17 +260,81 @@ export class CloudflareReviewStateClient implements ReviewStateClient {
 		windowSeconds: number,
 		now: number
 	): Promise<RateLimitDecision> {
-		return rateLimitDecisionSchema.parse(
-			await this.post('/ratelimit/check', { bucketKey, limit, windowSeconds, now })
-		);
+		if (this.circuitBreakerOpen) {
+			return { allowed: true, retryAfterSeconds: 0 };
+		}
+		try {
+			const result = rateLimitDecisionSchema.parse(
+				await this.post('/ratelimit/check', { bucketKey, limit, windowSeconds, now })
+			);
+			this.failureCount = 0;
+			return result;
+		} catch (error) {
+			this.recordFailure();
+			throw error;
+		}
 	}
 
 	async getIssuedSlot(slotHash: string): Promise<ReviewIssuedSlotRecord | null> {
-		return issuedSlotRecordSchema.nullable().parse(await this.post('/slots/get', { slotHash }));
+		if (this.circuitBreakerOpen) {
+			return null;
+		}
+		try {
+			const result = issuedSlotRecordSchema.nullable().parse(await this.post('/slots/get', { slotHash }));
+			this.failureCount = 0;
+			return result;
+		} catch (error) {
+			this.recordFailure();
+			throw error;
+		}
 	}
 
 	async claimIssuedSlot(record: ReviewIssuedSlotRecord): Promise<ReviewSlotClaimResult> {
-		return slotClaimResultSchema.parse(await this.post('/slots/claim', record));
+		if (this.circuitBreakerOpen) {
+			return this.fallbackClaimSlot(record);
+		}
+		try {
+			const result = slotClaimResultSchema.parse(await this.post('/slots/claim', record));
+			this.failureCount = 0;
+			return result;
+		} catch (error) {
+			this.recordFailure();
+			throw error;
+		}
+	}
+
+	private async fallbackClaimSlot(_record: ReviewIssuedSlotRecord): Promise<ReviewSlotClaimResult> {
+		return { created: true, existing: null };
+	}
+
+	async getIssuedReplySlot(parentReviewEventId: string): Promise<ReviewIssuedReplySlotRecord | null> {
+		if (this.circuitBreakerOpen) return null;
+		try {
+			const result = issuedReplySlotRecordSchema.nullable().parse(
+				await this.post('/reply-slots/get', { parentReviewEventId })
+			);
+			this.failureCount = 0;
+			return result;
+		} catch (error) {
+			this.recordFailure();
+			throw error;
+		}
+	}
+
+	async claimIssuedReplySlot(record: ReviewIssuedReplySlotRecord): Promise<{ created: boolean; existing: ReviewIssuedReplySlotRecord | null }> {
+		if (this.circuitBreakerOpen) {
+			return { created: true, existing: null };
+		}
+		try {
+			const result = replySlotClaimResultSchema.parse(
+				await this.post('/reply-slots/claim', record)
+			);
+			this.failureCount = 0;
+			return result;
+		} catch (error) {
+			this.recordFailure();
+			throw error;
+		}
 	}
 }
 

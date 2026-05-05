@@ -1,4 +1,4 @@
-import type { ReviewIssuedSlotRecord } from './state';
+import type { ReviewIssuedSlotRecord, ReviewIssuedReplySlotRecord } from './state';
 import { z } from 'zod';
 
 interface RateLimitRecord {
@@ -62,7 +62,7 @@ function getRateLimitExpiryStorageKey(expiresAt: number, bucketKey: string): str
 }
 
 export class ReviewStateDO {
-	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {}
+	constructor(private readonly state: DurableObjectState, private readonly env: unknown) { }
 
 	private async pruneExpiredRateLimits(now: number): Promise<void> {
 		const entries = await this.state.storage.list<RateLimitExpiryRecord>({
@@ -112,6 +112,25 @@ export class ReviewStateDO {
 		});
 	}
 
+
+	private async getIssuedReplySlot(parentReviewEventId: string): Promise<ReviewIssuedReplySlotRecord | null> {
+		return (await this.state.storage.get<ReviewIssuedReplySlotRecord>(`reply:${parentReviewEventId}`)) ?? null;
+	}
+
+	private async claimIssuedReplySlot(record: ReviewIssuedReplySlotRecord): Promise<{
+		created: boolean;
+		existing: ReviewIssuedReplySlotRecord | null;
+	}> {
+		return this.state.storage.transaction(async () => {
+			const existing = await this.getIssuedReplySlot(record.parentReviewEventId);
+			if (existing) {
+				return { created: false, existing: clone(existing) };
+			}
+			await this.state.storage.put(`reply:${record.parentReviewEventId}`, record);
+			return { created: true, existing: null };
+		});
+	}
+	
 	private async checkRateLimit(
 		bucketKey: string,
 		limit: number,
@@ -157,6 +176,16 @@ export class ReviewStateDO {
 
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
+
+		if (url.pathname === '/health') {
+			const issuedSlots = await this.state.storage.list({ prefix: 'issued:' });
+			return jsonResponse({
+				status: 'ok',
+				issuedSlotsCount: [...issuedSlots.entries()].length,
+				timestamp: Date.now()
+			});
+		}
+
 		if (request.method !== 'POST') {
 			return jsonResponse({ error: 'method_not_allowed' }, 405);
 		}
@@ -183,6 +212,23 @@ export class ReviewStateDO {
 		if (url.pathname === '/slots/claim') {
 			const record = slotClaimRequestSchema.parse(body) as ReviewIssuedSlotRecord;
 			return jsonResponse(await this.claimIssuedSlot(record));
+		}
+
+		if (url.pathname === '/reply-slots/get') {
+			const input = z.object({ parentReviewEventId: z.string().regex(/^[a-f0-9]{64}$/i) }).strict().parse(body);
+			const slot = await this.getIssuedReplySlot(input.parentReviewEventId);
+			return jsonResponse(slot ? clone(slot) : null);
+		}
+
+		if (url.pathname === '/reply-slots/claim') {
+			const input = z.object({
+				parentReviewEventId: z.string().regex(/^[a-f0-9]{64}$/i),
+				replyDraftHash: z.string().min(1),
+				replyEventId: z.string().min(1),
+				attestationEventId: z.string().min(1),
+				issuedAt: z.number().int().nonnegative()
+			}).strict().parse(body) as ReviewIssuedReplySlotRecord;
+			return jsonResponse(await this.claimIssuedReplySlot(input));
 		}
 
 		return jsonResponse({ error: 'not_found' }, 404);

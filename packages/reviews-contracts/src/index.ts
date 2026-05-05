@@ -28,3 +28,4 @@ export {
 } from './canonical';
 export * from './reply';
 export * from './status';
+export { VERIFICATION_ABI } from './abi/verification-abi';

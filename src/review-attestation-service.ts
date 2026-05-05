@@ -1,7 +1,7 @@
 import { schnorr } from '@noble/curves/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
 import { utf8ToBytes } from '@noble/hashes/utils';
 import { finalizeEvent, verifyEvent } from 'nostr-tools';
+import { sha256Fn } from './hash-utils';
 import { hexToBytes } from 'nostr-tools/utils';
 import { getAddress, verifyMessage } from 'viem';
 import { z } from 'zod';
@@ -77,31 +77,21 @@ export function parseRuntimeConfigFromEnv(env: {
 
 export function parseSlotHmacSecretFromEnv(env: {
 	REVIEW_SLOT_HMAC_SECRET?: string;
-	REVIEW_ATTESTATION_ISSUER_NSEC?: string;
 }): Uint8Array {
 	const configuredSecret = env.REVIEW_SLOT_HMAC_SECRET?.trim();
-	if (configuredSecret) {
-		if (/^[a-f0-9]{64}$/i.test(configuredSecret)) {
-			return hexToBytes(configuredSecret);
-		}
-
-		if (configuredSecret.startsWith('nsec1')) {
-			return hexToBytes(parseNsecToHex(configuredSecret));
-		}
-
-		if (configuredSecret.length < 32) {
-			throw new Error('Review slot HMAC secret must be at least 32 characters');
-		}
-
-		return utf8ToBytes(configuredSecret);
+	if (!configuredSecret) {
+		throw new Error('Missing review slot HMAC secret configuration');
 	}
 
-	const issuerNsec = env.REVIEW_ATTESTATION_ISSUER_NSEC?.trim();
-	if (issuerNsec) {
-		return hexToBytes(parseNsecToHex(issuerNsec));
+	if (/^[a-f0-9]{64}$/i.test(configuredSecret)) {
+		return hexToBytes(configuredSecret);
 	}
 
-	throw new Error('Missing review slot HMAC secret configuration');
+	if (configuredSecret.length < 32) {
+		throw new Error('Review slot HMAC secret must be at least 32 characters');
+	}
+
+	return utf8ToBytes(configuredSecret);
 }
 
 export class ReviewApiError extends Error {
@@ -128,7 +118,7 @@ export interface ReviewSettlementRegistry {
 		revieweeNpub: string;
 		reviewerWallet: string;
 		revieweeWallet: string;
-	}): ReviewableSettlementRecord | null;
+	}): ReviewableSettlementRecord | null | Promise<ReviewableSettlementRecord | null>;
 }
 
 export class StaticReviewSettlementRegistry implements ReviewSettlementRegistry {
@@ -247,7 +237,8 @@ export class ReviewAttestationService {
 	}
 
 	private get slotHmacSecret(): Uint8Array {
-		return this.deps.slotHmacSecret ?? parseSlotHmacSecretFromEnv(this.deps.issuerRegistryEnv);
+		if (this.deps.slotHmacSecret) return this.deps.slotHmacSecret;
+		return parseSlotHmacSecretFromEnv({ REVIEW_SLOT_HMAC_SECRET: this.deps.issuerRegistryEnv.REVIEW_SLOT_HMAC_SECRET });
 	}
 
 	private nextNonce(): string {
@@ -273,7 +264,7 @@ export class ReviewAttestationService {
 	async createChallenge(input: ChallengeRequest, meta: RequestMeta): Promise<ChallengeResponse> {
 		const now = meta.now;
 		const reviewDraftHash = normalizeHex(input.reviewDraftHash);
-		const settlement = this.resolveSettlement(input);
+		const settlement = await this.resolveSettlement(input);
 		if (!settlement) {
 			throw new ReviewApiError('resolver_not_found', 404);
 		}
@@ -319,7 +310,7 @@ export class ReviewAttestationService {
 	async issueAttestation(input: AttestationRequest, meta: RequestMeta): Promise<AttestationResponse> {
 		const now = meta.now;
 		const reviewDraftHash = normalizeHex(input.reviewDraftHash);
-		const settlement = this.resolveSettlement(input);
+		const settlement = await this.resolveSettlement(input);
 		if (!settlement) {
 			throw new ReviewApiError('resolver_not_found', 404);
 		}
@@ -355,7 +346,7 @@ export class ReviewAttestationService {
 
 		const challengeSigValid = schnorr.verify(
 			parseChallengeSignature(input.nostrChallengeSignature),
-			sha256(utf8ToBytes(challengeMessage)),
+			sha256Fn(utf8ToBytes(challengeMessage)),
 			hexToBytes(reviewerPubkey)
 		);
 		if (!challengeSigValid) {
@@ -422,7 +413,7 @@ export class ReviewAttestationService {
 					created_at: Math.floor(issuedAt / 1000),
 					tags: [
 						['e', reviewEvent.id],
-						['d', reviewDraftHash],
+						['d', slotHash],
 						['p', reviewerPubkey],
 						['p', normalizedRevieweePubkey],
 						['subject', settlement.subjectType],
@@ -499,7 +490,8 @@ export class ReviewAttestationService {
 			throw new ReviewApiError('challenge_invalid', 400, 'Malformed challenge token');
 		}
 
-		const issuerEntry = this.getIssuerRegistryAt(now).issuers.find((entry) => entry.keyId === payload.keyId);
+		const registry = this.getIssuerRegistryAt(now);
+		const issuerEntry = registry.issuers.find((entry: typeof registry.issuers[number]) => entry.keyId === payload.keyId);
 		if (!issuerEntry) {
 			throw new ReviewApiError('challenge_invalid', 400, 'Unknown challenge issuer');
 		}
@@ -533,7 +525,7 @@ export class ReviewAttestationService {
 		return payload;
 	}
 
-	private resolveSettlement(input: ChallengeRequest | AttestationRequest): ReviewableSettlementRecord | null {
+	private async resolveSettlement(input: ChallengeRequest | AttestationRequest): Promise<ReviewableSettlementRecord | null> {
 		return this.deps.settlementRegistry.resolve({
 			subjectType: input.subjectType,
 			subjectId: input.subjectId,

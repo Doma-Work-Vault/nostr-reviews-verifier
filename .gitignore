@@ -3,3 +3,5 @@ node_modules
 .dev.vars
 .env
 .env.local
+dist
+.claude-flow

@@ -25,6 +25,19 @@ import {
 	parseNostrRelaysFromEnv,
 	type ReviewNostrPublisher
 } from './nostr-publisher';
+import { corsMiddleware } from './middleware/cors';
+import { structuredLogger } from './logger';
+import {
+	DynamicSettlementResolver,
+	InMemorySettlementCache,
+	parseRpcConfigFromEnv
+} from './settlement-resolver';
+import {
+	ReplyAttestationService,
+	replyChallengeRequestSchema,
+	replyAttestationRequestSchema
+} from './reply-attestation-service';
+import { SimplePool } from 'nostr-tools';
 
 export interface ReviewsAttestationEnv {
 	REVIEW_STATE: ReviewStateNamespace;
@@ -38,6 +51,14 @@ export interface ReviewsAttestationEnv {
 	REVIEW_ATTESTATION_TTL_SECONDS?: string;
 	REVIEW_RATE_LIMIT_WINDOW_SECONDS?: string;
 	REVIEW_SLOT_HMAC_SECRET?: string;
+	ALLOWED_ORIGINS?: string;
+	RSK_RPC_URL?: string;
+	RSK_MAINNET_RPC_URL?: string;
+	RSK_TESTNET_RPC_URL?: string;
+	BSC_RPC_URL?: string;
+	BSC_MAINNET_RPC_URL?: string;
+	BSC_TESTNET_RPC_URL?: string;
+	SETTLEMENT_CACHE_TTL_SECONDS?: string;
 }
 
 export interface ReviewsAttestationAppOptions {
@@ -128,6 +149,8 @@ export function createReviewsAttestationApp(
 		})
 	);
 
+	app.use('*', corsMiddleware);
+
 	app.onError((error, c) => {
 		if (error instanceof HTTPException && error.status === 400) {
 			return c.json(
@@ -158,7 +181,7 @@ export function createReviewsAttestationApp(
 				'issuer_unavailable',
 				503,
 				error instanceof Error ? error.message : 'Issuer registry unavailable'
-			)) as any;
+			))
 		}
 	});
 
@@ -173,7 +196,7 @@ export function createReviewsAttestationApp(
 			});
 			return c.json(result);
 		} catch (error) {
-			return respondWithServiceError(c, error) as any;
+			return respondWithServiceError(c, error)
 		}
 	});
 
@@ -188,7 +211,37 @@ export function createReviewsAttestationApp(
 			});
 			return c.json(result);
 		} catch (error) {
-			return respondWithServiceError(c, error) as any;
+			return respondWithServiceError(c, error)
+		}
+	});
+
+	// ── Reply attestation routes ──────────────────────────────────────
+
+	app.post('/review-reply-attestations/challenge', async (c) => {
+		try {
+			const body = replyChallengeRequestSchema.parse(await c.req.json());
+			const replyService = createReplyService(c.env, options);
+			const result = await replyService.createChallenge(body, {
+				clientIp: c.get('clientIp'),
+				now: Date.now()
+			});
+			return c.json(result);
+		} catch (error) {
+			return respondWithServiceError(c, error)
+		}
+	});
+
+	app.post('/review-reply-attestations', async (c) => {
+		try {
+			const body = replyAttestationRequestSchema.parse(await c.req.json());
+			const replyService = createReplyService(c.env, options);
+			const result = await replyService.issueAttestation(body, {
+				clientIp: c.get('clientIp'),
+				now: Date.now()
+			});
+			return c.json(result);
+		} catch (error) {
+			return respondWithServiceError(c, error)
 		}
 	});
 
@@ -201,7 +254,7 @@ function respondWithServiceError(
 		header: (name: string, value: string) => void;
 	},
 	error: unknown
-) {
+): Response {
 	if (error instanceof z.ZodError || error instanceof SyntaxError) {
 		return c.json(
 			reviewErrorResponseSchema.parse({
@@ -239,14 +292,12 @@ function respondWithServiceError(
 	}
 
 	if (error instanceof ReviewApiError) {
-		console.error(JSON.stringify({
-			level: 'error',
+		structuredLogger.error(`ReviewApiError: ${error.code}`, error, {
 			code: error.code,
 			status: error.status,
 			message: error.message,
-			retryAfterSeconds: error.retryAfterSeconds,
-			stack: error.stack
-		}));
+			retryAfterSeconds: error.retryAfterSeconds
+		});
 
 		if (error.retryAfterSeconds) {
 			c.header('retry-after', String(error.retryAfterSeconds));
@@ -264,13 +315,10 @@ function respondWithServiceError(
 		);
 	}
 
-	console.error(JSON.stringify({
-		level: 'error',
+	structuredLogger.error('Unexpected backend error', error instanceof Error ? error : undefined, {
 		code: 'internal_error',
-		status: 500,
-		message: error instanceof Error ? error.message : 'Unexpected backend error',
-		stack: error instanceof Error ? error.stack : undefined
-	}));
+		status: 500
+	});
 
 	return c.json(
 		reviewErrorResponseSchema.parse({
@@ -284,9 +332,30 @@ function respondWithServiceError(
 }
 
 function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAppOptions = {}) {
-	const settlementRegistry = new StaticReviewSettlementRegistry(
+	const staticRegistry = new StaticReviewSettlementRegistry(
 		parseSettlementRegistryFromEnv(env.REVIEWS_SETTLEMENT_REGISTRY_JSON)
 	);
+
+	const cacheTtlSeconds = env.SETTLEMENT_CACHE_TTL_SECONDS
+		? parseInt(env.SETTLEMENT_CACHE_TTL_SECONDS, 10)
+		: 300;
+
+	const rpcConfigEnv: Record<string, string | undefined> = {
+		RSK_RPC_URL: env.RSK_RPC_URL,
+		RSK_MAINNET_RPC_URL: env.RSK_MAINNET_RPC_URL,
+		RSK_TESTNET_RPC_URL: env.RSK_TESTNET_RPC_URL,
+		BSC_RPC_URL: env.BSC_RPC_URL,
+		BSC_MAINNET_RPC_URL: env.BSC_MAINNET_RPC_URL,
+		BSC_TESTNET_RPC_URL: env.BSC_TESTNET_RPC_URL
+	};
+
+	const settlementRegistry = new DynamicSettlementResolver({
+		rpcConfig: parseRpcConfigFromEnv(rpcConfigEnv),
+		cache: new InMemorySettlementCache(),
+		cacheTtlMs: cacheTtlSeconds * 1000,
+		fallback: staticRegistry
+	});
+
 	const publisher =
 		options.publisher ??
 		new RelayReviewNostrPublisher(parseNostrRelaysFromEnv(env.REVIEW_ATTESTATION_NOSTR_RELAYS_JSON), 10_000);
@@ -297,6 +366,26 @@ function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAp
 		issuerRegistryEnv: env,
 		config: parseRuntimeConfigFromEnv(env),
 		slotHmacSecret: parseSlotHmacSecretFromEnv(env),
+		clock: () => Date.now(),
+		nonce: options.nonce
+	});
+}
+
+function createReplyService(env: ReviewsAttestationEnv, options: ReviewsAttestationAppOptions = {}) {
+	const relays = parseNostrRelaysFromEnv(env.REVIEW_ATTESTATION_NOSTR_RELAYS_JSON);
+	const pool = new SimplePool({ enableReconnect: false, enablePing: false });
+
+	const publisher =
+		options.publisher ??
+		new RelayReviewNostrPublisher(relays, 10_000);
+
+	return new ReplyAttestationService({
+		state: new CloudflareReviewStateClient(env.REVIEW_STATE),
+		publisher,
+		queryPool: pool,
+		relays,
+		issuerRegistryEnv: env,
+		config: parseRuntimeConfigFromEnv(env),
 		clock: () => Date.now(),
 		nonce: options.nonce
 	});

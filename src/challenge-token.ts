@@ -1,6 +1,6 @@
 import { schnorr } from '@noble/curves/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
 import { utf8ToBytes } from '@noble/hashes/utils';
+import { sha256Fn } from './hash-utils';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { z } from 'zod';
 import {
@@ -120,7 +120,7 @@ export function createReviewChallengeToken(
 	if (serialized.length > REVIEW_CHALLENGE_LIMITS.maxTokenPayloadJsonLength) {
 		throw new Error('Challenge payload exceeds maximum size');
 	}
-	const signature = bytesToHex(schnorr.sign(sha256(utf8ToBytes(serialized)), hexToBytes(issuerPrivateKeyHex)));
+	const signature = bytesToHex(schnorr.sign(sha256Fn(utf8ToBytes(serialized)), hexToBytes(issuerPrivateKeyHex)));
 	const encodedPayload = encodeBase64Url(utf8ToBytes(serialized));
 	if (encodedPayload.length > REVIEW_CHALLENGE_LIMITS.maxTokenPayloadLength) {
 		throw new Error('Challenge payload exceeds maximum encoded size');
@@ -141,7 +141,7 @@ export function parseAndVerifyReviewChallengeToken(
 	const serializedPayload = decodeSerializedPayload(payloadEncoded);
 	const isValid = schnorr.verify(
 		hexToBytes(signatureHex),
-		sha256(utf8ToBytes(serializedPayload)),
+		sha256Fn(utf8ToBytes(serializedPayload)),
 		hexToBytes(expectedPubkeyHex)
 	);
 	if (!isValid) {

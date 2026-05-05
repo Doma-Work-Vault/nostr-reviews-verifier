@@ -1,8 +1,8 @@
-import { createRoute } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { hmac } from '@noble/hashes/hmac';
-import { sha256 } from '@noble/hashes/sha256';
 import { utf8ToBytes } from '@noble/hashes/utils';
 import { bytesToHex } from 'nostr-tools/utils';
+import { sha256Hex, sha256Fn } from './hash-utils';
 import {
 	REVIEWS_SCHEMA_VERSION,
 	REVIEW_NOSTR_KINDS,
@@ -54,7 +54,7 @@ export function normalizeHex(value: string): string {
 }
 
 export function hashHex(input: string): string {
-	return bytesToHex(sha256(utf8ToBytes(input)));
+	return sha256Hex(input);
 }
 
 export type ChallengeRequest = SharedAttestationChallengeRequest;
@@ -93,7 +93,7 @@ export function buildSettlementSlotHash(
 	secret: Uint8Array | string
 ): string {
 	const keyBytes = typeof secret === 'string' ? utf8ToBytes(secret) : secret;
-	return bytesToHex(hmac(sha256, keyBytes, utf8ToBytes(buildSettlementSlotMaterial(record))));
+	return bytesToHex(hmac(sha256Fn, keyBytes, utf8ToBytes(buildSettlementSlotMaterial(record))));
 }
 
 export function parseHexOrNpub(value: string): string {
@@ -141,7 +141,7 @@ export const challengeRoute = createRoute({
 		body: {
 			content: {
 				'application/json': {
-					schema: challengeRequestSchema as any
+					schema: challengeRequestSchema as z.ZodType,
 				}
 			}
 		}
@@ -151,7 +151,7 @@ export const challengeRoute = createRoute({
 			description: 'Challenge issued',
 			content: {
 				'application/json': {
-					schema: challengeResponseSchema as any
+					schema: challengeResponseSchema as z.ZodType,
 				}
 			}
 		}
@@ -165,7 +165,7 @@ export const attestationRoute = createRoute({
 		body: {
 			content: {
 				'application/json': {
-					schema: attestationRequestSchema as any
+					schema: attestationRequestSchema as z.ZodType,
 				}
 			}
 		}
@@ -175,12 +175,12 @@ export const attestationRoute = createRoute({
 			description: 'Attestation issued',
 			content: {
 				'application/json': {
-					schema: attestationResponseSchema as any
+					schema: attestationResponseSchema as z.ZodType,
 				}
 			}
 		}
 	}
 });
 
-export const issuerRegistryOpenApiSchema = issuerRegistryResponseSchema as any;
+export const issuerRegistryOpenApiSchema = issuerRegistryResponseSchema as z.ZodType;
 export { issuerRegistryResponseSchema };

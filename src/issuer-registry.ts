@@ -24,7 +24,7 @@ export function getActiveIssuer(env: {
 }) {
 	const registry = getIssuerRegistry(env);
 	const now = env.clock?.() ?? Date.now();
-	const active = registry.issuers.find((entry) => {
+	const active = registry.issuers.find((entry: typeof registry.issuers[number]) => {
 		if (entry.status !== 'active') {
 			return false;
 		}
