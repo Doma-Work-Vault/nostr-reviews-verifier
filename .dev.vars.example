@@ -1,27 +1,42 @@
-# Stable identifier for the active attestation signing key.
-REVIEW_ATTESTATION_ISSUER_KEY_ID=reviews-attestation-issuer-v1
+# ── REQUIRED ──────────────────────────────────────────
 
-# Public Nostr identity of the attestation issuer. Must match the nsec below.
+# Public Nostr identity of the attestation issuer (npub format).
 REVIEW_ATTESTATION_ISSUER_NPUB=
 
-# Private Nostr signing key for the attestation issuer in NIP-19 nsec format.
+# Private Nostr signing key for the attestation issuer (nsec format).
 REVIEW_ATTESTATION_ISSUER_NSEC=
 
-# Optional explicit issuer registry JSON served by the worker. If set, the active
-# entry must match the configured issuer key id and npub above.
+# HMAC secret for slot hash computation (>=32 chars or 64-char hex).
+# Used to derive stable settlement slot identifiers without revealing settlement data.
+REVIEW_SLOT_HMAC_SECRET=229da739ed9c2a57426dc6bbddc640aba0d661c0ba1837ff8db2d86f2042f0d7
+
+# Nostr relays for publishing attestations (JSON array).
+REVIEW_ATTESTATION_NOSTR_RELAYS_JSON=["wss://relay.damus.io"]
+
+# Allowed CORS origins (comma-separated). Required for browser access.
+ALLOWED_ORIGINS=http://localhost:3000
+
+# ── OPTIONAL (sensible defaults exist) ────────────────
+
+# Human-readable label for the active signing key.
+REVIEW_ATTESTATION_ISSUER_KEY_ID=reviews-attestation-issuer-v1
+
+# Multi-issuer registry for key rotation. Set to [] for single-key setups.
+# When empty, the registry is auto-derived from NPUB/NSEC above.
 REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON=[]
 
-# Private settlement registry used by local dev/tests to resolve reviewable
-# contracts/bookings into normalized settlement records.
-REVIEWS_SETTLEMENT_REGISTRY_JSON=[]
-
-# Lifetime in seconds for an issued attestation challenge before it expires.
+# Challenge token validity (seconds). Default: 900 (15 min).
 REVIEW_CHALLENGE_TTL_SECONDS=900
 
-# Lifetime in seconds for a published attestation before the client should treat
-# it as expired.
+# Attestation expiration (seconds). Default: 86400 (24 hours).
 REVIEW_ATTESTATION_TTL_SECONDS=86400
 
-# Sliding window in seconds used by the backend rate limiter for attestation
-# challenge/issuance abuse controls.
+# Rate limit sliding window (seconds). Default: 600 (10 min).
 REVIEW_RATE_LIMIT_WINDOW_SECONDS=600
+
+# Settlement cache TTL (seconds). Default: 300 (5 min).
+SETTLEMENT_CACHE_TTL_SECONDS=300
+
+# Unified RSK RPC URL — used for both mainnet and testnet.
+# Falls back to https://public-node.rsk.co if not set.
+RSK_RPC_URL=

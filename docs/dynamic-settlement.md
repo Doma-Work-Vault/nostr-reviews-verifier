@@ -15,9 +15,7 @@ This document outlines planned enhancements for the Reviews Attestation Backend.
 
 ### Current Limitation
 
-Settlements are currently loaded from `REVIEWS_SETTLEMENT_REGISTRY_JSON`, a static JSON array in environment variables. This requires:
-- Manual addition of each settlement
-- Redeployment to update the registry
+Settlements are resolved on-chain via RPC calls to RSK/BSC nodes. The resolver caches results with a configurable TTL to avoid redundant RPC calls.
 - No real-time verification of blockchain state
 - Potential for stale data
 
@@ -196,7 +194,6 @@ export class DynamicSettlementResolver implements SettlementResolver {
     private escrowResolver: EscrowSettlementResolver,
     private quoteResolver: QuoteContractResolver,
     private identityResolver: IdentityResolver,
-    private fallbackRegistry: StaticReviewSettlementRegistry
   ) {}
 
   async resolve(input: SettlementResolutionInput): Promise<ReviewableSettlementRecord | null> {

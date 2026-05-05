@@ -61,7 +61,7 @@ This document defines the complete production implementation plan for `nostr-rev
 
 - No MVP mentality — full production-grade implementation required
 - On-chain settlement verification is REQUIRED, not optional
-- The static `REVIEWS_SETTLEMENT_REGISTRY_JSON` approach is a temporary bridge, not a final solution
+- On-chain settlement verification via RPC is the primary resolution path
 - The service must be deployable as a standalone npm package
 
 ---
@@ -226,7 +226,7 @@ The BitTasker ecosystem already has deployed escrow contracts with ABIs:
 
 ### 5.1 Why This Is Required
 
-The current static registry approach (`REVIEWS_SETTLEMENT_REGISTRY_JSON`) is fundamentally unsuitable for production because:
+The static registry approach is not suited for production because:
 
 1. **Single point of failure** — If the JSON is misconfigured, invalid escrow states could be attested
 2. **No real-time state** — Cannot respond to on-chain events like dispute resolution
@@ -1387,7 +1387,6 @@ Instead of traditional auth, the system needs:
 wrangler.toml [secrets]      # Use Cloudflare Secrets UI instead
 
 # NEVER open source:
-REVIEWS_SETTLEMENT_REGISTRY_JSON  # Contains participant wallets, npubs, task IDs
 REVIEW_ATTESTATION_ISSUER_NSEC    # Signing key - must use Cloudflare Secrets
 REVIEW_SLOT_HMAC_SECRET          # Slot binding key - must use Cloudflare Secrets
 ```
@@ -1423,7 +1422,6 @@ REVIEW_SLOT_HMAC_SECRET          # Slot binding key - must use Cloudflare Secret
 | `packages/reviews-contracts/src/schemas.ts` | Zod schemas                           |
 | `packages/reviews-contracts/src/types.ts`   | TypeScript types                      |
 | `docs/dynamic-settlement.md`                | Future resolver design                |
-| `docs/settlement-registry.md`               | Current registry format               |
 
 
 ## Appendix B: Contract ABIs

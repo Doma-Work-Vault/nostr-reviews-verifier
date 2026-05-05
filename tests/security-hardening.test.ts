@@ -556,9 +556,6 @@ describe('attestation worker hardening', () => {
 						validUntil: null
 					}
 				]),
-				REVIEWS_SETTLEMENT_REGISTRY_JSON: JSON.stringify([
-					makeSettlement(reviewerPubkey, revieweePubkey, reviewerWallet.address)
-				]),
 				REVIEW_ATTESTATION_NOSTR_RELAYS_JSON: JSON.stringify(['wss://relay.example']),
 				REVIEW_CHALLENGE_TTL_SECONDS: '30',
 				REVIEW_ATTESTATION_TTL_SECONDS: '45',

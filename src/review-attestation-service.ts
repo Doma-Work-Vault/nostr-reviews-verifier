@@ -121,50 +121,6 @@ export interface ReviewSettlementRegistry {
 	}): ReviewableSettlementRecord | null | Promise<ReviewableSettlementRecord | null>;
 }
 
-export class StaticReviewSettlementRegistry implements ReviewSettlementRegistry {
-	constructor(private readonly records: ReviewableSettlementRecord[]) {}
-
-	resolve(input: {
-		subjectType: ReviewSubjectType;
-		subjectId: string;
-		settlementType: ReviewSettlementType;
-		settlementId: string;
-		chain: ReviewChain;
-		asset: ReviewAsset;
-		contractAddress: string;
-		reviewerNpub: string;
-		revieweeNpub: string;
-		reviewerWallet: string;
-		revieweeWallet: string;
-	}): ReviewableSettlementRecord | null {
-		const match = this.records.find((record) => {
-			return (
-				record.subjectType === input.subjectType &&
-				record.subjectId === input.subjectId &&
-				record.settlementType === input.settlementType &&
-				record.settlementId === input.settlementId &&
-				record.chain === input.chain &&
-				record.asset === input.asset &&
-				record.contractAddress.toLowerCase() === input.contractAddress.toLowerCase()
-			);
-		});
-
-		if (!match) {
-			return null;
-		}
-
-		return reviewableSettlementRecordSchema.parse(match);
-	}
-}
-
-export function parseSettlementRegistryFromEnv(json?: string): ReviewableSettlementRecord[] {
-	if (!json || !json.trim()) {
-		return [];
-	}
-
-	return reviewableSettlementRecordSchema.array().parse(JSON.parse(json));
-}
-
 function normalizeAddress(value: string): string {
 	return getAddress(value);
 }

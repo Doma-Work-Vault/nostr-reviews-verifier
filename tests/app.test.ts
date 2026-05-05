@@ -97,7 +97,6 @@ describe('reviews attestation backend app', () => {
 			REVIEW_ATTESTATION_ISSUER_NSEC: issuerNsec,
 			REVIEW_ATTESTATION_ISSUER_NPUB: issuerNpub,
             REVIEW_SLOT_HMAC_SECRET: '0'.repeat(64),
-            REVIEWS_SETTLEMENT_REGISTRY_JSON: JSON.stringify([settlement]),
             REVIEW_ATTESTATION_ISSUER_KEY_ID: 'reviews-attestation-issuer-v1'
 		} as any;
 
@@ -175,7 +174,6 @@ describe('reviews attestation backend app', () => {
 			REVIEW_STATE: createNamespace(),
 			REVIEW_ATTESTATION_ISSUER_NSEC: issuerNsec,
 			REVIEW_ATTESTATION_ISSUER_NPUB: issuerNpub,
-			REVIEWS_SETTLEMENT_REGISTRY_JSON: JSON.stringify([settlement]),
 			REVIEW_CHALLENGE_TTL_SECONDS: '1',
             REVIEW_SLOT_HMAC_SECRET: '0'.repeat(64),
             REVIEW_ATTESTATION_ISSUER_KEY_ID: 'reviews-attestation-issuer-v1'

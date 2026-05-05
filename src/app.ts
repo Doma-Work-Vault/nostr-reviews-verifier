@@ -13,9 +13,7 @@ import {
 	ReviewApiError,
 	ReviewAttestationService,
 	parseRuntimeConfigFromEnv,
-	parseSlotHmacSecretFromEnv,
-	StaticReviewSettlementRegistry,
-	parseSettlementRegistryFromEnv
+	parseSlotHmacSecretFromEnv
 } from './review-attestation-service';
 import { CloudflareReviewStateClient, type ReviewStateNamespace } from './state';
 import { getIssuerRegistry } from './issuer-registry';
@@ -45,7 +43,6 @@ export interface ReviewsAttestationEnv {
 	REVIEW_ATTESTATION_ISSUER_NPUB?: string;
 	REVIEW_ATTESTATION_ISSUER_NSEC?: string;
 	REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON?: string;
-	REVIEWS_SETTLEMENT_REGISTRY_JSON?: string;
 	REVIEW_ATTESTATION_NOSTR_RELAYS_JSON?: string;
 	REVIEW_CHALLENGE_TTL_SECONDS?: string;
 	REVIEW_ATTESTATION_TTL_SECONDS?: string;
@@ -332,10 +329,6 @@ function respondWithServiceError(
 }
 
 function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAppOptions = {}) {
-	const staticRegistry = new StaticReviewSettlementRegistry(
-		parseSettlementRegistryFromEnv(env.REVIEWS_SETTLEMENT_REGISTRY_JSON)
-	);
-
 	const cacheTtlSeconds = env.SETTLEMENT_CACHE_TTL_SECONDS
 		? parseInt(env.SETTLEMENT_CACHE_TTL_SECONDS, 10)
 		: 300;
@@ -353,7 +346,7 @@ function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAp
 		rpcConfig: parseRpcConfigFromEnv(rpcConfigEnv),
 		cache: new InMemorySettlementCache(),
 		cacheTtlMs: cacheTtlSeconds * 1000,
-		fallback: staticRegistry
+		fallback: null
 	});
 
 	const publisher =

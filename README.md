@@ -141,51 +141,14 @@ Edit `.dev.vars` with your values (see [Configuration](#configuration) below).
 | `REVIEW_ATTESTATION_ISSUER_NPUB` | Yes | Nostr public key (npub format) | `npub1abc...` |
 | `REVIEW_ATTESTATION_ISSUER_NSEC` | Yes | Nostr private key (nsec format) | `nsec1xyz...` |
 | `REVIEW_SLOT_HMAC_SECRET` | Yes | 64-char hex or 32+ char string for slot hashing | `a1b2c3...` (64 hex chars) |
-| `REVIEWS_SETTLEMENT_REGISTRY_JSON` | Yes | JSON array of reviewable settlements | See below |
 | `REVIEW_ATTESTATION_NOSTR_RELAYS_JSON` | No | JSON array of relay URLs | `["wss://relay.damus.io"]` |
 | `REVIEW_CHALLENGE_TTL_SECONDS` | No | Challenge expiry (default: 900) | `900` |
 | `REVIEW_ATTESTATION_TTL_SECONDS` | No | Attestation expiry (default: 86400) | `86400` |
 | `REVIEW_RATE_LIMIT_WINDOW_SECONDS` | No | Rate limit window (default: 600) | `600` |
 
-### Settlement Registry Format
+### Settlement Resolution
 
-The `REVIEWS_SETTLEMENT_REGISTRY_JSON` must be a JSON array of settlement records:
-
-```json
-[
-  {
-    "subjectType": "task",
-    "subjectId": "task-123",
-    "settlementType": "escrow",
-    "settlementId": "escrow-456",
-    "chain": "rsk",
-    "asset": "rbtc",
-    "contractAddress": "0x1234567890abcdef1234567890abcdef12345678",
-    "contractVersion": "1",
-    "reviewerRole": "client",
-    "revieweeRole": "provider",
-    "reviewerNpub": "npub1reviewer...",
-    "revieweeNpub": "npub1reviewee...",
-    "reviewerWallet": "0xReviewerWallet...",
-    "revieweeWallet": "0xRevieweeWallet...",
-    "blockchainState": "funds_released",
-    "completedAt": 1713800000000,
-    "reviewableAt": 1713800000000,
-    "contractOutcome": "completed",
-    "status": "reviewable",
-    "sourceVisibility": "public_present",
-    "sourcePresentation": {
-      "label": "Task #123",
-      "href": "https://bittasker.io/tasks/123"
-    },
-    "sourceRefs": {
-      "escrowId": "escrow-456"
-    }
-  }
-]
-```
-
-See [docs/settlement-registry.md](docs/settlement-registry.md) for detailed field documentation.
+Settlements are resolved on-chain via RPC calls to RSK/BSC nodes. The `DynamicSettlementResolver` queries the blockchain directly using the contract's `getPaymentContractState(uint256)` function. Results are cached with a configurable TTL.
 
 ### Example `.dev.vars`
 
@@ -197,9 +160,6 @@ REVIEW_ATTESTATION_ISSUER_NSEC=nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 
 # Slot HMAC Secret (64-char hex)
 REVIEW_SLOT_HMAC_SECRET=0000000000000000000000000000000000000000000000000000000000000000
-
-# Settlement Registry
-REVIEWS_SETTLEMENT_REGISTRY_JSON=[{"subjectType":"task","subjectId":"task-1","settlementType":"escrow","settlementId":"s1","chain":"rsk","asset":"rbtc","contractAddress":"0x1111111111111111111111111111111111111111","contractVersion":"1","reviewerRole":"client","revieweeRole":"provider","reviewerNpub":"npub1...","revieweeNpub":"npub1...","reviewerWallet":"0x...","revieweeWallet":"0x...","blockchainState":"funds_released","completedAt":1713800000000,"reviewableAt":1713800000000,"contractOutcome":"completed","status":"reviewable","sourceVisibility":"public_present","sourcePresentation":{"label":"Task"},"sourceRefs":{"escrowId":"e1"}}]
 
 # Nostr Relays
 REVIEW_ATTESTATION_NOSTR_RELAYS_JSON=["wss://relay.damus.io","wss://relay.nostr.band"]
@@ -566,7 +526,6 @@ nostr-reviews-verifier/
 │           ├── canonical.ts        # JSON canonicalization
 │           └── challenge.ts        # Challenge message builder
 ├── docs/
-│   ├── settlement-registry.md      # Settlement registry format docs
 │   └── dynamic-settlement.md       # Future implementation plans
 ├── wrangler.toml                   # Cloudflare Worker configuration
 ├── package.json
@@ -621,7 +580,6 @@ npx wrangler login
 # 2. Set production secrets
 npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC
 npx wrangler secret put REVIEW_SLOT_HMAC_SECRET
-npx wrangler secret put REVIEWS_SETTLEMENT_REGISTRY_JSON
 npx wrangler secret put REVIEW_ATTESTATION_NOSTR_RELAYS_JSON
 
 # 3. Deploy
