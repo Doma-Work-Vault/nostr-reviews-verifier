@@ -12,7 +12,7 @@ export type {
 	ReviewReplyEventContent,
 	ReviewIssuerRecord,
 	ReviewIssuerRegistryResponse,
-	ReviewErrorResponse,
+	ReviewErrorResponse, ReviewChallengeRequest, ReviewChallengeResponse, ReviewAttestationRequest, ReviewAttestationResponse,
 	NostrEventLike
 } from './types';
 export * from './schemas';
