@@ -1,641 +1,496 @@
 # Nostr Reviews Verifier
 
-A Cloudflare Workers-based backend service that issues cryptographically-verified attestations for reviews on the BitTasker decentralized freelance marketplace.
+A **Cloudflare Workers** backend (Hono + OpenAPI) that issues **cryptographically verified** Nostr attestations for reviews on the BitTasker marketplace. It ties **EVM settlement state** on RSK/BSC to **Nostr identities** so only real participants can obtain attestations for published reviews and replies.
 
-This service bridges blockchain-based escrow settlements with the Nostr protocol, ensuring that only legitimate participants from completed transactions can publish verified reviews.
+This repository also contains the publishable npm package **`@bittasker/reviews-contracts`** under `packages/reviews-contracts/` (Zod schemas, kinds, hashing, ABI fragments). The Worker depends on that package as specified in root `package.json`.
 
-## Table of Contents
+---
 
-- [Overview](#overview)
+## Table of contents
+
+- [What you get](#what-you-get)
 - [Architecture](#architecture)
+- [Shared contracts package](#shared-contracts-package)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [Running the Service](#running-the-service)
-- [API Reference](#api-reference)
-- [How It Works](#how-it-works)
-- [Nostr Event Kinds](#nostr-event-kinds)
-- [Security Model](#security-model)
-- [Project Structure](#project-structure)
+- [On-chain settlement resolution](#on-chain-settlement-resolution)
+- [Running the service](#running-the-service)
+- [API reference](#api-reference)
+- [How it works](#how-it-works)
+- [Reply attestation (overview)](#reply-attestation-overview)
+- [Nostr event kinds and tags](#nostr-event-kinds-and-tags)
+- [Querying attestations from relays](#querying-attestations-from-relays)
+- [Security model](#security-model)
+- [Project structure](#project-structure)
 - [Testing](#testing)
-- [Deployment](#deployment)
+- [Deployment (Cloudflare Workers)](#deployment-cloudflare-workers)
 - [Troubleshooting](#troubleshooting)
+- [License and contributing](#license-and-contributing)
 
-## Overview
+---
 
-### What This Service Does
+## What you get
 
-1. **Review Attestation Issuance**: Issues Nostr event attestations (kind 6431) that cryptographically verify a review was submitted by a legitimate participant in a completed blockchain settlement
-2. **Challenge-Response Authentication**: Implements a two-phase flow where reviewers must prove ownership of both their Nostr identity AND their EVM wallet
-3. **One-Review-Per-Settlement Enforcement**: Prevents duplicate reviews for the same settlement slot using HMAC-based slot hashing
-4. **Rate Limiting**: Protects against abuse with per-IP and per-slot rate limiting
-5. **Multi-Relay Publishing**: Publishes attestation events to configurable Nostr relays
+| Feature | Description |
+|--------|-------------|
+| **Review attestation** | `POST /review-attestations/challenge` then `POST /review-attestations` — dual signatures (Nostr Schnorr + wallet `personal_sign`) bind reviewer npub + wallets to a settlement and review draft hash. |
+| **Reply attestation** | `POST /review-reply-attestations/challenge` then `POST /review-reply-attestations` — reviewee proves the same way; issuer publishes kind **6433** after verifying kind **6432** reply and original kind **6431** attestation (fetched from relays). |
+| **One review per settlement slot** | HMAC-based **slot hash** in the Durable Object; atomic claim prevents duplicate attestations for the same settlement material. |
+| **One reply per reviewed review** | Separate reply slot keyed by parent review event id. |
+| **Dynamic settlement resolution** | Reads contract state over JSON-RPC; supports **V2** `getPaymentContractState` and legacy **`getEscrow`** with distinct on-chain state mappings; in-memory cache with configurable TTL. |
+| **Rate limiting** | Per-IP and per-slot limits enforced in the Durable Object (challenge + attestation paths; reply paths included). |
+| **Multi-relay publish** | `nostr-tools` `SimplePool` publishes signed attestation events to `REVIEW_ATTESTATION_NOSTR_RELAYS_JSON`. |
+| **Issuer registry** | `GET /review-attestation-issuers` — supports rotation metadata (`keyId`, `validFrom`, `validUntil`, `status`). |
+| **CORS** | `ALLOWED_ORIGINS` — comma-separated list for browser clients. |
+| **Structured logging** | JSON logs (`structuredLogger`) for operations and errors. |
+| **OpenAPI** | `GET /openapi.json` — machine-readable contract for all HTTP routes. |
 
-### Supported Settlement Types
-
-| Type | Description |
-|------|-------------|
-| `escrow` | BitTasker escrow smart contracts |
-| `service_quote_contract` | Service booking quote contracts |
-| `instant_buy_contract` | Instant purchase contracts |
-
-### Supported Chains
-
-| Chain | Asset |
-|-------|-------|
-| RSK (Rootstock) | RBTC |
-| BSC (Binance Smart Chain) | USDT |
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Cloudflare Workers                             │
-│                                                                      │
-│  ┌──────────────────┐    ┌────────────────────────────────────────┐ │
-│  │    Hono App      │───▶│      ReviewAttestationService          │ │
-│  │   (OpenAPI)      │    │  - Challenge creation & signing        │ │
-│  │                  │    │  - Signature verification              │ │
-│  │  /health         │    │  - Attestation issuance                │ │
-│  │  /openapi.json   │    └────────────────────────────────────────┘ │
-│  │  /challenge      │                     │                         │
-│  │  /attestations   │                     ▼                         │
-│  └──────────────────┘    ┌────────────────────────────────────────┐ │
-│           │              │         Durable Object                  │ │
-│           │              │  - Rate limiting (per-IP, per-slot)     │ │
-│           │              │  - Slot claiming (prevent duplicates)   │ │
-│           ▼              └────────────────────────────────────────┘ │
-│  ┌──────────────────┐                     │                         │
-│  │ Settlement       │                     ▼                         │
-│  │ Registry         │    ┌────────────────────────────────────────┐ │
-│  │ (Static JSON)    │    │       Nostr Publisher                   │ │
-│  └──────────────────┘    │  - SimplePool → configurable relays     │ │
-│                          └────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-                           ┌─────────────────────┐
-                           │    Nostr Relays     │
-                           │  (wss://relay..)    │
-                           └─────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Cloudflare Workers                                │
+│                                                                          │
+│  ┌────────────────────┐     ┌─────────────────────────────────────────┐│
+│  │ Hono + OpenAPI     │     │ ReviewAttestationService                 ││
+│  │ /health            │────▶│ · challenge + attestation (reviews)      ││
+│  │ /openapi.json      │     │ · settlement via DynamicSettlementResolver│
+│  │ /review-attestations/*    │ · slot HMAC + DO rate limits / claims   ││
+│  │ /review-reply-*    │────▶│ ReplyAttestationService                  ││
+│  │ /review-attestation-issuers│ · relay read + reply path               ││
+│  └─────────┬──────────┘     └──────────────────┬──────────────────────┘│
+│            │                                    │                        │
+│            │         ┌──────────────────────────▼──────────────────────┐│
+│            │         │ Durable Object (ReviewStateDO)                   ││
+│            │         │ · rate limit counters · issued slots / replies   ││
+│            │         └──────────────────────────┬──────────────────────┘│
+│            │                                    │                        │
+│            └────────────────────────────────────┼────────────────────────────┘
+│                                                 │                         │
+│                      ┌──────────────────────────▼─────────────────────────┐
+│                      │ RelayReviewNostrPublisher (SimplePool)             │
+│                      └──────────────────────────┬─────────────────────────┘
+└─────────────────────────────────────────────────┼─────────────────────────┘
+                                                  │
+                    ┌─────────────────────────────▼─────────────────────────────┐
+                    │ Nostr relays (wss://…)                                    │
+                    └─────────────────────────────┬─────────────────────────────┘
+                                                  │
+                    ┌─────────────────────────────▼─────────────────────────────┐
+                    │ RSK / BSC JSON-RPC (settlement contracts)                  │
+                    └────────────────────────────────────────────────────────────┘
 ```
+
+Settlement data is **not** loaded from a static JSON file in production: the **`DynamicSettlementResolver`** talks to the chain (with cache). A pluggable fallback hook exists in code for optional future registries.
+
+---
+
+## Shared contracts package
+
+- **Path:** `packages/reviews-contracts/`
+- **npm name:** `@bittasker/reviews-contracts`
+- **Contents:** Zod schemas (`schemas.ts`), enums, Nostr kind constants, review/reply hashing, challenge message builders, and **viem** ABI fragments (`V2_PAYMENT_STATE_ABI`, `LEGACY_ESCROW_ABI`, unified `VERIFICATION_ABI`, `ONCHAIN_STATE_MAP`).
+
+The **root app** imports this package using the dependency entry in **`package.json`** (your team’s chosen version or registry). After changing contracts, follow your release process so the Worker resolves an updated package (publish to npm, version bump, or internal registry — whatever matches that entry).
+
+**Local development of the contracts package:**
+
+```bash
+cd packages/reviews-contracts
+npm install
+npm run build
+npm test
+```
+
+---
 
 ## Prerequisites
 
-- **Node.js** 18+ (recommended: 20+)
-- **npm** 8+ (comes with Node.js)
-- A **Nostr keypair** for the attestation issuer (nsec/npub)
-- A **Cloudflare account** (for deployment)
+- **Node.js** 18+ (20+ recommended)
+- **npm** 8+
+- A **Nostr issuer** keypair (nsec / npub) for signing attestations
+- A **Cloudflare** account for deployment
+- **RPC endpoints** reachable from Workers for chains you use (RSK/BSC vars below)
+
+---
 
 ## Installation
-
-### 1. Clone and Install Dependencies
 
 ```bash
 git clone <repository-url>
 cd nostr-reviews-verifier
-
-# Install root dependencies
 npm install
-
-# The reviews-contracts package is linked automatically
 ```
 
-### 2. Generate Issuer Keys
+Copy secrets template for Wrangler dev:
 
-The attestation issuer needs a Nostr keypair. Generate one:
+```bash
+cp .dev.vars.example .dev.vars
+# Edit .dev.vars — never commit real secrets
+```
+
+### Generate issuer keys and slot secret
 
 ```javascript
-// Run in Node.js REPL or create a script
+// Node.js (type: module), or adapt for a small script file
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import { nsecEncode, npubEncode } from 'nostr-tools/nip19';
 import { bytesToHex } from 'nostr-tools/utils';
 
 const sk = generateSecretKey();
 const pk = getPublicKey(sk);
+const random32 = globalThis.crypto.getRandomValues(new Uint8Array(32));
 
 console.log('REVIEW_ATTESTATION_ISSUER_NSEC=' + nsecEncode(sk));
 console.log('REVIEW_ATTESTATION_ISSUER_NPUB=' + npubEncode(pk));
-console.log('REVIEW_SLOT_HMAC_SECRET=' + bytesToHex(crypto.getRandomValues(new Uint8Array(32))));
+console.log('REVIEW_SLOT_HMAC_SECRET=' + bytesToHex(random32));
 ```
 
-**Keep the nsec secret!** Never commit it to version control.
-
-### 3. Configure Environment
-
-Create a `.dev.vars` file for local development:
-
-```bash
-cp .dev.vars.example .dev.vars
-```
-
-Edit `.dev.vars` with your values (see [Configuration](#configuration) below).
+---
 
 ## Configuration
 
-### Environment Variables
+### Required for typical operation
 
-| Variable | Required | Description | Example |
-|----------|----------|-------------|---------|
-| `REVIEW_ATTESTATION_ISSUER_KEY_ID` | Yes | Stable identifier for the signing key | `reviews-attestation-issuer-v1` |
-| `REVIEW_ATTESTATION_ISSUER_NPUB` | Yes | Nostr public key (npub format) | `npub1abc...` |
-| `REVIEW_ATTESTATION_ISSUER_NSEC` | Yes | Nostr private key (nsec format) | `nsec1xyz...` |
-| `REVIEW_SLOT_HMAC_SECRET` | Yes | 64-char hex or 32+ char string for slot hashing | `a1b2c3...` (64 hex chars) |
-| `REVIEW_ATTESTATION_NOSTR_RELAYS_JSON` | No | JSON array of relay URLs | `["wss://relay.damus.io"]` |
-| `REVIEW_CHALLENGE_TTL_SECONDS` | No | Challenge expiry (default: 900) | `900` |
-| `REVIEW_ATTESTATION_TTL_SECONDS` | No | Attestation expiry (default: 86400) | `86400` |
-| `REVIEW_RATE_LIMIT_WINDOW_SECONDS` | No | Rate limit window (default: 600) | `600` |
+| Variable | Description |
+|----------|-------------|
+| `REVIEW_ATTESTATION_ISSUER_NPUB` | Issuer npub (public). |
+| `REVIEW_ATTESTATION_ISSUER_NSEC` | Issuer nsec (secret — use **Wrangler secret** in production). |
+| `REVIEW_SLOT_HMAC_SECRET` | **≥32** characters or **64-char hex**; used for settlement slot HMAC (secret in production). |
+| `REVIEW_ATTESTATION_NOSTR_RELAYS_JSON` | JSON array of `wss://` relay URLs for publishing (often a secret in production). |
+| `ALLOWED_ORIGINS` | Comma-separated browser origins allowed by CORS (e.g. `https://app.example.com,http://localhost:5173`). |
 
-### Settlement Resolution
+### Optional (defaults exist)
 
-Settlements are resolved on-chain via RPC calls to RSK/BSC nodes. The `DynamicSettlementResolver` queries the blockchain directly using the contract's `getPaymentContractState(uint256)` function. Results are cached with a configurable TTL.
+| Variable | Default / notes |
+|----------|------------------|
+| `REVIEW_ATTESTATION_ISSUER_KEY_ID` | `reviews-attestation-issuer-v1` |
+| `REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON` | `[]` — empty builds a single-issuer registry from npub/nsec. |
+| `REVIEW_CHALLENGE_TTL_SECONDS` | `900` |
+| `REVIEW_ATTESTATION_TTL_SECONDS` | `86400` |
+| `REVIEW_RATE_LIMIT_WINDOW_SECONDS` | `600` |
+| `SETTLEMENT_CACHE_TTL_SECONDS` | `300` — on-chain settlement cache TTL. |
 
-### Example `.dev.vars`
+### RPC URLs (settlement verification)
+
+Used by `parseRpcConfigFromEnv` / `DynamicSettlementResolver`. Set at least what you need for `chain` values clients send (`rsk`, `bsc`).
+
+| Variable | Role |
+|----------|------|
+| `RSK_RPC_URL` | Preferred single RSK URL when set. |
+| `RSK_MAINNET_RPC_URL` / `RSK_TESTNET_RPC_URL` | Per-network overrides. |
+| `BSC_RPC_URL` | Preferred single BSC URL when set. |
+| `BSC_MAINNET_RPC_URL` / `BSC_TESTNET_RPC_URL` | Per-network overrides. |
+
+If `RSK_RPC_URL` is unset, code may fall back to a public RSK endpoint (see `settlement-resolver.ts`).
+
+### Example `.dev.vars` (shape only)
 
 ```bash
-# Issuer Identity
 REVIEW_ATTESTATION_ISSUER_KEY_ID=reviews-attestation-issuer-v1
-REVIEW_ATTESTATION_ISSUER_NPUB=npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
-REVIEW_ATTESTATION_ISSUER_NSEC=nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+REVIEW_ATTESTATION_ISSUER_NPUB=npub1...
+REVIEW_ATTESTATION_ISSUER_NSEC=nsec1...
+REVIEW_SLOT_HMAC_SECRET=<64-char-hex-or-long-random-string>
+REVIEW_ATTESTATION_NOSTR_RELAYS_JSON=["wss://relay.example.com"]
+ALLOWED_ORIGINS=http://localhost:5173
 
-# Slot HMAC Secret (64-char hex)
-REVIEW_SLOT_HMAC_SECRET=0000000000000000000000000000000000000000000000000000000000000000
-
-# Nostr Relays
-REVIEW_ATTESTATION_NOSTR_RELAYS_JSON=["wss://relay.damus.io","wss://relay.nostr.band"]
-
-# Timing (optional, shown are defaults)
+REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON=[]
 REVIEW_CHALLENGE_TTL_SECONDS=900
 REVIEW_ATTESTATION_TTL_SECONDS=86400
 REVIEW_RATE_LIMIT_WINDOW_SECONDS=600
+SETTLEMENT_CACHE_TTL_SECONDS=300
+
+RSK_RPC_URL=https://public-node.rsk.co
+# BSC_RPC_URL=https://...
 ```
 
-## Running the Service
+---
 
-### Local Development
+## On-chain settlement resolution
+
+1. **`ContractSettlementVerifier`** calls **`getPaymentContractState(uint32)`** on the contract address (V2-style payment contracts).
+2. If that fails (e.g. older deployment), it falls back to **`getEscrow(uint256)`** and maps the returned **Escrow** struct into the same internal shape.
+3. On-chain `uint8` state is mapped to **`ReviewBlockchainState`** separately for each method (legacy escrow numbering differs from payment contracts).
+4. **`InMemorySettlementCache`** stores successful resolutions for **`SETTLEMENT_CACHE_TTL_SECONDS`** to reduce RPC load.
+
+Clients still send **`settlementId`**, **`contractAddress`**, **`chain`**, **`asset`**, wallets, and npubs; the service checks participants and **reviewable** outcomes before issuing a challenge.
+
+---
+
+## Running the service
 
 ```bash
-# Start the development server
 npm run dev
-
-# Server runs at http://localhost:8787
 ```
 
-### Available Commands
+Default local URL: **http://localhost:8787** (Wrangler).
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start local development server |
-| `npm run deploy` | Deploy to Cloudflare Workers |
-| `npm run check` | TypeScript type checking |
-| `npm test` | Run tests |
-| `npm run test:watch` | Run tests in watch mode |
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Wrangler dev server |
+| `npm run deploy` | `wrangler deploy` |
+| `npm run check` | `tsc --noEmit` |
+| `npm test` | Vitest suite |
+| `npm run test:watch` | Vitest watch |
 
-### Using Wrangler Directly
+---
 
-Since Wrangler is installed as a devDependency, use `npx`:
+## API reference
 
-```bash
-npx wrangler --version
-npx wrangler dev
-npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC
-```
+Interactive documentation is not bundled as a UI; import **`GET /openapi.json`** into Swagger Editor or similar.
 
-## API Reference
+### `GET /health`
 
-### Endpoints
+Returns `{ "ok": true }`.
 
-#### `GET /health`
+### `GET /openapi.json`
 
-Health check endpoint.
+OpenAPI 3.0 document for all routes and schemas.
 
-**Response:**
-```json
-{ "ok": true }
-```
+### `GET /review-attestation-issuers`
 
-#### `GET /openapi.json`
+Public issuer registry. Each issuer **`pubkey`** may be **hex (64 chars)** or **npub** per schema.
 
-Returns the OpenAPI 3.0 specification.
+### `POST /review-attestations/challenge`
 
-#### `GET /review-attestation-issuers`
+Body: challenge request (see OpenAPI) — includes `reviewDraftHash`, subject/settlement identifiers, `chain`, `asset`, `contractAddress`, `reviewerNpub`, `revieweeNpub`, `reviewerWallet`, `revieweeWallet`.
 
-Returns the public issuer registry.
+Returns: `challengeToken`, `challengeMessage`, `issuedAt`, `expiresAt`.
 
-**Response:**
+### `POST /review-attestations`
+
+Body: signed kind **6430** review event, challenge token, Nostr + wallet signatures over `challengeMessage`, and the same settlement fields as challenge.
+
+Returns: `attestationEventId`, `issuerPubkey`, `reviewDraftHash`, `issuedAt`.
+
+### `POST /review-reply-attestations/challenge`
+
 ```json
 {
-  "schemaVersion": 1,
-  "issuers": [
-    {
-      "keyId": "reviews-attestation-issuer-v1",
-      "pubkey": "64-char-hex-pubkey",
-      "status": "active",
-      "validFrom": 0,
-      "validUntil": null
-    }
-  ]
-}
-```
-
-#### `POST /review-attestations/challenge`
-
-Request a challenge for review submission.
-
-**Request:**
-```json
-{
-  "reviewDraftHash": "64-char-hex-sha256",
-  "subjectType": "task",
-  "subjectId": "task-123",
-  "settlementType": "escrow",
-  "settlementId": "escrow-456",
-  "chain": "rsk",
-  "asset": "rbtc",
-  "contractAddress": "0x...",
-  "reviewerNpub": "npub1...",
-  "revieweeNpub": "npub1...",
-  "reviewerWallet": "0x...",
+  "parentReviewEventId": "64-hex-event-id",
+  "replyDraftHash": "64-hex-sha256",
+  "revieweeNpub": "npub1... or 64-hex",
   "revieweeWallet": "0x..."
 }
 ```
 
-**Response:**
-```json
-{
-  "schemaVersion": 1,
-  "challengeToken": "v1.<base64url-payload>.<hex-signature>",
-  "challengeMessage": "BitTasker review attestation\nchallenge_token:...\n...",
-  "issuedAt": 1713800000000,
-  "expiresAt": 1713800900000
-}
-```
+Returns the same challenge shape as review flow (`schemaVersion`, `challengeToken`, `challengeMessage`, `issuedAt`, `expiresAt`).
 
-#### `POST /review-attestations`
+### `POST /review-reply-attestations`
 
-Submit a signed review for attestation.
+Body: `parentReviewEventId`, `replyDraftHash`, `signedReplyEvent` (**kind 6432**), `challengeToken`, `nostrChallengeSignature`, `walletChallengeSignature`, `revieweeNpub`, `revieweeWallet`.
 
-**Request:**
-```json
-{
-  "reviewDraftHash": "64-char-hex",
-  "signedReviewEvent": {
-    "id": "nostr-event-id",
-    "pubkey": "hex-pubkey",
-    "created_at": 1713800000,
-    "kind": 6430,
-    "tags": [],
-    "content": "{...review payload...}",
-    "sig": "128-char-hex"
-  },
-  "challengeToken": "v1...",
-  "nostrChallengeSignature": "128-char-hex-schnorr",
-  "walletChallengeSignature": "0x...130-char-hex-ecdsa",
-  "subjectType": "task",
-  "subjectId": "task-123",
-  "settlementType": "escrow",
-  "settlementId": "escrow-456",
-  "chain": "rsk",
-  "asset": "rbtc",
-  "contractAddress": "0x...",
-  "reviewerNpub": "npub1...",
-  "revieweeNpub": "npub1...",
-  "reviewerWallet": "0x...",
-  "revieweeWallet": "0x..."
-}
-```
+Returns: `attestationEventId`, `issuerPubkey`, `replyDraftHash`, `issuedAt`.
 
-**Response:**
-```json
-{
-  "schemaVersion": 1,
-  "status": "ok",
-  "attestationEventId": "nostr-event-id",
-  "issuerPubkey": "64-char-hex",
-  "reviewDraftHash": "64-char-hex",
-  "issuedAt": 1713800000000
-}
-```
-
-### Error Responses
-
-All errors follow this format:
+### Error payload
 
 ```json
 {
   "schemaVersion": 1,
   "status": "error",
-  "code": "error_code",
-  "message": "Human-readable message",
+  "code": "rate_limited",
+  "message": "…",
   "retryAfterSeconds": 60
 }
 ```
 
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `request_invalid` | 400 | Malformed request body |
-| `challenge_invalid` | 400 | Invalid or tampered challenge token |
-| `challenge_expired` | 400 | Challenge TTL exceeded |
-| `nostr_signature_invalid` | 400 | Nostr Schnorr signature verification failed |
-| `wallet_signature_invalid` | 400 | EVM wallet ECDSA signature verification failed |
-| `review_event_invalid` | 400 | Review event content doesn't match expected schema |
-| `resolver_not_found` | 404 | Settlement not found in registry |
-| `contract_outcome_invalid` | 409 | Settlement state doesn't allow reviews |
-| `settlement_not_reviewable` | 409 | Missing participant bindings |
-| `participant_mismatch` | 409 | Reviewer/reviewee doesn't match settlement |
-| `duplicate_review_slot` | 409 | Review already issued for this settlement |
-| `rate_limited` | 429 | Too many requests |
-| `attestation_publish_failed` | 502 | Failed to publish to Nostr relays |
-| `issuer_unavailable` | 503 | Issuer configuration error |
-| `internal_error` | 500 | Unexpected server error |
+Common **`code`** values include: `request_invalid`, `challenge_invalid`, `challenge_expired`, `nostr_signature_invalid`, `wallet_signature_invalid`, `review_event_invalid`, `reply_event_invalid`, `resolver_not_found`, `contract_outcome_invalid`, `settlement_not_reviewable`, `participant_mismatch`, `duplicate_review_slot`, `duplicate_review_reply`, `reply_not_allowed`, `rate_limited`, `attestation_publish_failed`, `issuer_unavailable`, `internal_error`. The canonical list is **`REVIEW_ERROR_CODES`** in `@bittasker/reviews-contracts` / OpenAPI.
 
-## How It Works
+---
 
-### The Verification Flow
+## How it works
+
+### Review flow (correct HTTP paths)
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        PHASE 1: CHALLENGE                            │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Client                              Backend                         │
-│    │                                    │                            │
-│    │  POST /challenge                   │                            │
-│    │  {reviewDraftHash, settlement...}  │                            │
-│    │ ─────────────────────────────────▶ │                            │
-│    │                                    │                            │
-│    │                            Verify: │                            │
-│    │                            - Settlement exists?                 │
-│    │                            - Reviewable state?                  │
-│    │                            - Not already reviewed?              │
-│    │                            - Rate limit OK?                     │
-│    │                                    │                            │
-│    │  {challengeToken, challengeMsg}    │                            │
-│    │ ◀───────────────────────────────── │                            │
-│    │                                    │                            │
-└──────────────────────────────────────────────────────────────────────┘
+PHASE 1 — Challenge
+  Client  POST /review-attestations/challenge  →  Worker verifies settlement + slot + limits
+  Client  ←  challengeToken + challengeMessage
 
-┌──────────────────────────────────────────────────────────────────────┐
-│                     PHASE 2: USER SIGNS                              │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  User signs challengeMessage with:                                   │
-│                                                                      │
-│  1. Nostr Private Key (nsec) ──▶ Schnorr signature (64 bytes)        │
-│     Proves: "I control this Nostr identity"                          │
-│                                                                      │
-│  2. EVM Wallet Key ──▶ ECDSA signature (65 bytes)                    │
-│     Proves: "I control this blockchain wallet"                       │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+PHASE 2 — User signs (off Worker)
+  Sign challengeMessage with Nostr key (BIP-340) and with wallet (personal_sign).
 
-┌──────────────────────────────────────────────────────────────────────┐
-│                    PHASE 3: ATTESTATION                              │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Client                              Backend                         │
-│    │                                    │                            │
-│    │  POST /attestations                │                            │
-│    │  {signedReview, signatures...}     │                            │
-│    │ ─────────────────────────────────▶ │                            │
-│    │                                    │                            │
-│    │                            Verify: │                            │
-│    │                            - Challenge token valid?             │
-│    │                            - Challenge not expired?             │
-│    │                            - Nostr signature valid?             │
-│    │                            - Wallet signature valid?            │
-│    │                            - Review matches hash?               │
-│    │                            - Claim slot (atomic)                │
-│    │                                    │                            │
-│    │                            Create: │                            │
-│    │                            - Attestation event (kind 6431)      │
-│    │                            - Sign with issuer nsec              │
-│    │                            - Publish to relays                  │
-│    │                                    │                            │
-│    │  {attestationEventId, issuedAt}    │                            │
-│    │ ◀───────────────────────────────── │                            │
-│    │                                    │                            │
-└──────────────────────────────────────────────────────────────────────┘
+PHASE 3 — Attestation
+  Client  POST /review-attestations  →  verify token, signatures, review hash, claim slot, publish kind 6431
+  Client  ←  attestationEventId, issuerPubkey, …
 ```
 
-### Why Dual Signatures?
+### Why dual signatures?
 
-The settlement (blockchain contract) knows wallet addresses. The Nostr network knows pubkeys. Without proving both:
+The chain knows **wallet addresses**; Nostr knows **pubkeys**. Signing the same opaque challenge with both keys binds identity, settlement, and review content.
 
-- An attacker could create a fake Nostr identity and claim to be a settlement participant
-- There would be no link between the blockchain transaction and the Nostr review
+---
 
-By requiring signatures from BOTH keys on the same challenge message, we cryptographically bind:
-- The Nostr identity (npub)
-- The blockchain wallet (0x address)  
-- The specific settlement and review content
+## Reply attestation (overview)
 
-## Nostr Event Kinds
+1. The **review** must already be attested (kind **6431** on relays).
+2. **Challenge** proves the caller controls the **reviewee** npub + wallet and passes reply rate limits.
+3. **Attestation** verifies the reply event (**6432**), challenge token, dual signatures, then publishes kind **6433** and records the reply slot in the DO.
 
-This service uses custom Nostr event kinds in the 6000-6999 range:
+The service **reads** relays for the parent attestation when resolving the reviewee context (configure the same relay list you publish to).
 
-| Kind | Name | Created By | Purpose |
-|------|------|------------|---------|
-| 6430 | Review Event | User (reviewer) | Contains the review content, rating, and metadata |
-| 6431 | Attestation Event | This service (issuer) | Proves the review is from a verified participant |
-| 6432 | Reply Event | User (reviewee) | Allows the reviewed party to respond |
+---
 
-### Attestation Event Structure (Kind 6431)
+## Nostr event kinds and tags
 
-```json
-{
-  "kind": 6431,
-  "pubkey": "<issuer-pubkey>",
-  "created_at": 1713800000,
-  "tags": [
-    ["e", "<original-review-event-id>"],
-    ["d", "<review-draft-hash>"],
-    ["p", "<reviewer-pubkey>"],
-    ["p", "<reviewee-pubkey>"],
-    ["subject", "task"],
-    ["settlement", "escrow"]
-  ],
-  "content": "{\"schemaVersion\":1,\"reviewEventId\":\"...\",\"reviewDraftHash\":\"...\",\"issuedAt\":...,\"expiresAt\":...,\"keyId\":\"...\"}",
-  "sig": "<issuer-signature>"
-}
+| Kind | Role |
+|------|------|
+| **6430** | User review (payload in `content` JSON). |
+| **6431** | Issuer attestation for a review. |
+| **6432** | User reply to a review. |
+| **6433** | Issuer attestation for a reply. |
+
+### Kind 6431 tags (review attestation)
+
+Typical tags:
+
+- **`e`** — review event id (hex).
+- **`e`** — subject id (e.g. task id string in Nostr tag value).
+- **`d`** — **slot hash** (stable per settlement slot; NIP-33 replaceable identifier — **not** the raw `reviewDraftHash`).
+- **`p`** — reviewer pubkey (hex).
+- **`p`** — reviewee pubkey (hex).
+- **`subject`**, **`settlement`** — subject type and settlement type strings.
+
+### Kind 6431 `content` JSON (attestation payload)
+
+Includes `reviewEventId`, `reviewDraftHash`, roles, `contractOutcome`, `issuedAt`, `expiresAt`, `keyId`, and optionally **`rating`** and **`comment`** mirroring the verified review (see `attestationEventPayloadSchema` in contracts).
+
+### Kind 6433 tags (reply attestation)
+
+Includes **`e`** tags for parent review id and reply event id, **`d`** (parent review id), **`p`** (reviewee), plus JSON `content` with `parentReviewEventId`, `replyEventId`, `replyDraftHash`, etc.
+
+---
+
+## Querying attestations from relays
+
+The Worker **publishes** attestations; it is **not** a relay proxy. Frontends should use **`nostr-tools`** `SimplePool` (or NDK, etc.) against the **same relays** configured for publishing.
+
+**Fetch attestation by review event id** (kind 6431, `e` tag points to review):
+
+```typescript
+import { SimplePool } from 'nostr-tools';
+
+const pool = new SimplePool();
+const events = await pool.querySync(relays, {
+  kinds: [6431],
+  '#e': [reviewEventId],
+  limit: 10
+});
 ```
 
-## Security Model
+**NIP-33 / latest by slot:** the **`d`** tag on kind 6431 is the **slot hash**. Filter with `#d` and `authors: [<issuer hex pubkey>]` to get replaceable semantics per issuer.
 
-### Cryptographic Guarantees
+Use **`GET /review-attestation-issuers`** for issuer pubkeys and metadata.
+
+---
+
+## Security model
 
 | Mechanism | Purpose |
 |-----------|---------|
-| Challenge Token (Schnorr signed) | Prevents forged challenges; binds to specific settlement/review |
-| Nostr Signature (Schnorr) | Proves ownership of Nostr identity |
-| Wallet Signature (ECDSA) | Proves ownership of blockchain wallet |
-| Review Draft Hash (SHA-256) | Commits to review content before signing |
-| Slot Hash (HMAC-SHA256) | Prevents duplicate reviews even if data changes |
+| Issuer-signed **challenge token** | Binds challenge to issuer key id and slot material. |
+| **Dual signatures** on `challengeMessage` | Binds Nostr identity + EVM wallet. |
+| **Review draft hash** | SHA-256 over canonical review payload. |
+| **Slot HMAC** | Server secret; stable id per settlement slot without exposing raw ids in the `d` tag context. |
+| **Durable Object** | Atomic slot claims + rate limit state. |
+| **Secrets** | `REVIEW_ATTESTATION_ISSUER_NSEC`, `REVIEW_SLOT_HMAC_SECRET`, relay JSON — use **Wrangler secrets** in production, `.dev.vars` locally (gitignored). |
 
-### Rate Limiting
+Rate limits (enforced in DO; approximate defaults documented in tests / `state.ts`):
 
-| Scope | Limit | Window |
-|-------|-------|--------|
-| Per-IP (challenge) | 20 requests | 10 minutes |
-| Per-slot (challenge) | 5 requests | 10 minutes |
-| Per-IP (attestation) | 10 requests | 10 minutes |
-| Per-slot (attestation) | 3 requests | 10 minutes |
+| Scope | Typical limit | Window |
+|-------|----------------|--------|
+| Per-IP challenge | 20 | 10 min |
+| Per-slot challenge | 5 | 10 min |
+| Per-IP attestation | 10 | 10 min |
+| Per-slot attestation | 3 | 10 min |
 
-### Secret Management
+---
 
-| Environment | Storage | Security |
-|-------------|---------|----------|
-| Local Development | `.dev.vars` file (gitignored) | File permissions |
-| Production | Cloudflare Secrets | Encrypted at rest |
-
-**Never commit secrets to version control.** Use:
-
-```bash
-# Set production secrets
-npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC
-npx wrangler secret put REVIEW_SLOT_HMAC_SECRET
-```
-
-## Project Structure
+## Project structure
 
 ```
 nostr-reviews-verifier/
 ├── src/
-│   ├── index.ts                    # Worker entry point, exports Durable Object
-│   ├── app.ts                      # Hono app factory, route handlers
-│   ├── contracts.ts                # Schema re-exports, slot HMAC, OpenAPI routes
-│   ├── review-attestation-service.ts  # Core business logic
-│   ├── durable-object.ts           # Cloudflare DO for rate limits & slots
-│   ├── state.ts                    # State client abstraction
-│   ├── challenge-token.ts          # Opaque token creation/verification
-│   ├── nostr-publisher.ts          # Relay publishing via SimplePool
-│   └── issuer-registry.ts          # Issuer key management
+│   ├── index.ts                 # Worker entry + Durable Object export
+│   ├── app.ts                   # Routes, CORS, service wiring
+│   ├── contracts.ts             # OpenAPI routes, slot hash, shared types
+│   ├── hash-utils.ts            # SHA-256 helpers
+│   ├── review-attestation-service.ts
+│   ├── reply-attestation-service.ts
+│   ├── settlement-resolver.ts   # Dynamic on-chain resolution + cache
+│   ├── durable-object.ts
+│   ├── state.ts
+│   ├── challenge-token.ts
+│   ├── nostr-publisher.ts
+│   ├── issuer-registry.ts
+│   ├── middleware/cors.ts
+│   ├── middleware/rate-limit-headers.ts
+│   └── logger.ts
+├── packages/reviews-contracts/  # @bittasker/reviews-contracts (npm package)
 ├── tests/
-│   ├── app.test.ts                 # HTTP app integration tests
-│   ├── review-attestation-service.test.ts
-│   ├── durable-object.concurrency.test.ts
-│   ├── security-hardening.test.ts
-│   └── ...
-├── packages/
-│   └── reviews-contracts/          # Shared schemas & types
-│       └── src/
-│           ├── schemas.ts          # Zod validation schemas
-│           ├── enums.ts            # Type enumerations
-│           ├── constants.ts        # Nostr kinds, limits
-│           ├── hash.ts             # Review draft hashing
-│           ├── canonical.ts        # JSON canonicalization
-│           └── challenge.ts        # Challenge message builder
-├── docs/
-│   └── dynamic-settlement.md       # Future implementation plans
-├── wrangler.toml                   # Cloudflare Worker configuration
+├── wrangler.toml
 ├── package.json
 ├── tsconfig.json
-└── vitest.config.ts
+├── vitest.config.ts
+├── .dev.vars.example
+└── README.md
 ```
+
+---
 
 ## Testing
 
-### Run All Tests
-
 ```bash
 npm test
+cd packages/reviews-contracts && npm test
 ```
 
-### Run Tests in Watch Mode
+Covers HTTP routes, attestation/reply flows, settlement resolver behavior, DO concurrency, and security-focused cases.
+
+---
+
+## Deployment (Cloudflare Workers)
+
+1. **Login:** `npx wrangler login`
+2. **Non-secret vars:** set in `wrangler.toml` `[vars]` or Cloudflare dashboard (e.g. `REVIEW_ATTESTATION_ISSUER_NPUB`, `ALLOWED_ORIGINS`, RPC URLs if not secret).
+3. **Secrets** (minimum typical set):
 
 ```bash
-npm run test:watch
-```
-
-### Test Coverage
-
-Tests cover:
-- HTTP endpoint behavior
-- Challenge/attestation flows
-- Signature verification
-- Rate limiting
-- Durable Object concurrency
-- Security hardening scenarios
-
-### Run Contract Package Tests
-
-```bash
-cd packages/reviews-contracts
-npm test
-```
-
-## Deployment
-
-### Prerequisites
-
-1. [Cloudflare account](https://dash.cloudflare.com/sign-up)
-2. [Wrangler authentication](https://developers.cloudflare.com/workers/wrangler/authentication/)
-
-### Deploy Steps
-
-```bash
-# 1. Authenticate with Cloudflare
-npx wrangler login
-
-# 2. Set production secrets
 npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC
 npx wrangler secret put REVIEW_SLOT_HMAC_SECRET
 npx wrangler secret put REVIEW_ATTESTATION_NOSTR_RELAYS_JSON
-
-# 3. Deploy
-npm run deploy
 ```
 
-### Environment-Specific Deployment
+4. **Deploy:** `npm run deploy`
 
-```bash
-# Deploy to staging
-npx wrangler deploy --env staging
+**Note:** `wrangler.toml` in this repo defines a **single** default Worker environment. There are **no** `[env.staging]` / `[env.production]` blocks unless you add them. Use **separate Cloudflare accounts or Worker names** for true isolation, or extend `wrangler.toml` with named environments before using `wrangler deploy --env <name>`.
 
-# Deploy to production
-npx wrangler deploy --env production
-```
+**Logs:** `npx wrangler tail`
+
+**Durable Objects:** migrations are already declared in `wrangler.toml` for `ReviewStateDO`. First deploy to a fresh namespace must succeed on migration application.
+
+---
 
 ## Troubleshooting
 
-### Common Issues
+| Issue | What to check |
+|-------|----------------|
+| `command not found: wrangler` | Use `npx wrangler …` (local devDependency). |
+| Missing issuer npub/nsec | `.dev.vars` locally; secrets + vars in Cloudflare for production. |
+| `Issuer npub does not match configured nsec` | Regenerate npub from the same nsec. |
+| No active issuer | `REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON` entries: `status: "active"`, `validFrom` / `validUntil` vs server time. |
+| `resolver_not_found` | Wrong `contractAddress` / `settlementId` / `chain`, RPC unreachable, or contract does not implement expected views. |
+| `contract_outcome_invalid` / `settlement_not_reviewable` | On-chain state not in a reviewable outcome for your rules. |
+| CORS errors | `ALLOWED_ORIGINS` must include the browser origin (scheme + host + port). |
+| 429 rate limit | Respect `retryAfterSeconds`; reduce client parallelism. |
 
-#### "command not found: wrangler"
+Structured logs use JSON — filter in Wrangler tail or Logpush.
 
-Wrangler is installed locally. Use `npx`:
+---
 
-```bash
-npx wrangler --version
-```
+## License and contributing
 
-#### "Missing review attestation issuer npub/nsec configuration"
-
-Ensure both `REVIEW_ATTESTATION_ISSUER_NPUB` and `REVIEW_ATTESTATION_ISSUER_NSEC` are set in `.dev.vars`.
-
-#### "Issuer npub does not match configured nsec"
-
-The npub must be derived from the nsec. Regenerate both together.
-
-#### "No active issuer available"
-
-Check that the issuer registry has an entry with `"status": "active"` and the current time is within the `validFrom`/`validUntil` range.
-
-#### Rate Limited (429)
-
-Wait for the `retryAfterSeconds` indicated in the response, or check for runaway clients.
-
-### Debug Logging
-
-The service logs errors to `console.error` in JSON format. Check Cloudflare Workers logs:
-
-```bash
-npx wrangler tail
-```
-
-## License
-
-[Specify your license]
-
-## Contributing
-
-[Specify contribution guidelines]
+Specify your **license** and **contribution** process here (this README intentionally leaves placeholders for your org).
