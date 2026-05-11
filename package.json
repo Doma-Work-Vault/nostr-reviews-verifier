@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config wrangler.toml",
+    "dev": "wrangler dev --config wrangler.toml --env dev",
     "deploy:dev": "wrangler deploy --config wrangler.toml --env dev",
     "deploy:main": "wrangler deploy --config wrangler.toml --env main",
     "check": "tsc -p tsconfig.json --noEmit",

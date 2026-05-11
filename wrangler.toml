@@ -3,10 +3,22 @@ main = "src/index.ts"
 compatibility_date = "2026-03-31"
 compatibility_flags = ["nodejs_compat"]
 minify = false
+
+# Top-level worker name is only used when no `--env` is passed. Always deploy with
+# `npm run deploy:dev` / `npm run deploy:main` so vars, DO bindings, and secrets attach
+# to the intended environment (Wrangler does not inherit [vars] or durable_objects
+# from the top level into [env.*]).
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ReviewStateDO"]
+
+# Development: `wrangler deploy --env dev` / `wrangler dev --env dev`
+[env.dev]
+name = "reviews-attestation-backend-dev"
 workers_dev = true
 
-# Default + `wrangler deploy` without `--env`: dev worker and dev relay.
-[vars]
+[env.dev.vars]
 REVIEW_ATTESTATION_ISSUER_KEY_ID = "reviews-attestation-issuer-v1"
 REVIEW_ATTESTATION_ISSUER_NPUB = "npub1knvwtvtjjwxpsj93adx80syuhe9v6e7tkutlz369pdstjcd97rvqk7n7yc"
 REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON = """[{"keyId":"reviews-attestation-issuer-v1","pubkey":"b4d8e5b172938c1848b1eb4c77c09cbe4acd67cbb717f147450b60b961a5f0d8","status":"active","validFrom":1700000000000}]"""
@@ -22,26 +34,30 @@ BSC_MAINNET_RPC_URL = "https://bsc-dataseed.binance.org"
 BSC_TESTNET_RPC_URL = "https://data-seed-prebsc-1-s1.binance.org:8545"
 SETTLEMENT_CACHE_TTL_SECONDS = "300"
 
-[[durable_objects.bindings]]
+[[env.dev.durable_objects.bindings]]
 name = "REVIEW_STATE"
 class_name = "ReviewStateDO"
 
-[[migrations]]
-tag = "v1"
-new_classes = ["ReviewStateDO"]
-
-# Explicit dev deploy: `wrangler deploy --env dev` (inherits top-level vars).
-[env.dev]
-name = "reviews-attestation-backend-dev"
-
-# Production: `wrangler deploy --env main` — overrides relay list + CORS only; set secrets per env.
+# Production: `wrangler deploy --env main`
 [env.main]
 name = "reviews-attestation-backend"
 workers_dev = false
 
 [env.main.vars]
-REVIEW_ATTESTATION_NOSTR_RELAYS = ["wss://relay1.bittasker.com"]
+REVIEW_ATTESTATION_ISSUER_KEY_ID = "reviews-attestation-issuer-v1"
+REVIEW_ATTESTATION_ISSUER_NPUB = "npub1knvwtvtjjwxpsj93adx80syuhe9v6e7tkutlz369pdstjcd97rvqk7n7yc"
+REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON = """[{"keyId":"reviews-attestation-issuer-v1","pubkey":"b4d8e5b172938c1848b1eb4c77c09cbe4acd67cbb717f147450b60b961a5f0d8","status":"active","validFrom":1700000000000}]"""
+REVIEW_CHALLENGE_TTL_SECONDS = "900"
+REVIEW_ATTESTATION_TTL_SECONDS = "86400"
+REVIEW_RATE_LIMIT_WINDOW_SECONDS = "600"
 ALLOWED_ORIGINS = "https://bittasker.com"
+
+REVIEW_ATTESTATION_NOSTR_RELAYS = ["wss://relay1.bittasker.com"]
+RSK_MAINNET_RPC_URL = "https://mainnet.sovryn.app/rpc"
+RSK_TESTNET_RPC_URL = "https://testnet.sovryn.app/rpc"
+BSC_MAINNET_RPC_URL = "https://bsc-dataseed.binance.org"
+BSC_TESTNET_RPC_URL = "https://data-seed-prebsc-1-s1.binance.org:8545"
+SETTLEMENT_CACHE_TTL_SECONDS = "300"
 
 [[env.main.durable_objects.bindings]]
 name = "REVIEW_STATE"
