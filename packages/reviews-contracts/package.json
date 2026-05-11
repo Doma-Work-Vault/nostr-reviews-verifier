@@ -1,16 +1,19 @@
 {
 	"name": "@bittasker/reviews-contracts",
-	"private": true,
 	"version": "0.0.1",
+	"description": "Zod schemas, constants, and helpers for BitTasker Nostr review attestations and on-chain settlement verification",
 	"type": "module",
+	"sideEffects": false,
 	"main": "./dist/index.js",
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"files": [
-		"dist"
+		"dist",
+		"README.md"
 	],
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
+		"prepack": "npm run build",
 		"test": "vitest run --config vitest.config.ts",
 		"test:watch": "vitest --config vitest.config.ts",
 		"check": "tsc -p tsconfig.json --noEmit"
@@ -22,9 +25,37 @@
 			"default": "./dist/index.js"
 		}
 	},
+	"keywords": [
+		"bittasker",
+		"nostr",
+		"reviews",
+		"attestation",
+		"zod",
+		"schemas"
+	],
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "https://gitlab.com/bittasker/nostr-reviews-verifier.git",
+		"directory": "packages/reviews-contracts"
+	},
+	"bugs": {
+		"url": "https://gitlab.com/bittasker/nostr-reviews-verifier/-/issues"
+	},
+	"homepage": "https://gitlab.com/bittasker/nostr-reviews-verifier/-/tree/main/packages/reviews-contracts",
+	"publishConfig": {
+		"access": "public"
+	},
+	"engines": {
+		"node": ">=18"
+	},
 	"peerDependencies": {
 		"@noble/hashes": "^1.8.0",
 		"nostr-tools": "^2.13.0",
 		"zod": "^3.0.0 || ^4.0.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.8.2",
+		"vitest": "^3.0.8"
 	}
 }
