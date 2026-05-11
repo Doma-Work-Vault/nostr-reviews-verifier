@@ -1,6 +1,6 @@
 import { createPublicClient, http, type PublicClient } from 'viem';
 import { rootstock } from 'viem/chains';
-import { VERIFICATION_ABI } from '@bittasker/reviews-contracts';
+import { V2_PAYMENT_STATE_ABI, LEGACY_ESCROW_ABI } from '@bittasker/reviews-contracts';
 import type {
 	ReviewBlockchainState,
 	ReviewChain,
@@ -10,21 +10,25 @@ import type {
 import type { ReviewSettlementRegistry } from './review-attestation-service';
 import { structuredLogger } from './logger';
 
-// ── Version-agnostic verifier interface ──────────────────────────────────────
+// ── Verifier interface ───────────────────────────────────────────────────────
 
 export interface ISettlementVerifier {
-	readonly supportedVersion: string;
-	getSettlementState(paymentId: bigint): Promise<{
+	getSettlementState(settlementId: bigint): Promise<{
 		state: number;
 		exists: boolean;
 		tasker: string;
 		taskee: string;
+		detectedMethod: 'getPaymentContractState' | 'getEscrow';
 	}>;
 }
 
-// ── On-chain uint8 → ReviewBlockchainState mapping ────────────────────────────
+// ── On-chain state mapping ───────────────────────────────────────────────────
 
-const ONCHAIN_TO_BLOCKCHAIN_STATE: Record<number, ReviewBlockchainState> = {
+/**
+ * Payment / V2 contract: `getPaymentContractState` uint8 state values.
+ * Must match the deployed payment contract enum (0–11).
+ */
+const PAYMENT_CONTRACT_ONCHAIN_STATE: Record<number, ReviewBlockchainState> = {
 	0: 'funded',
 	1: 'in_dispute',
 	2: 'dispute_resolved',
@@ -39,8 +43,47 @@ const ONCHAIN_TO_BLOCKCHAIN_STATE: Record<number, ReviewBlockchainState> = {
 	11: 'in_dispute_wip'
 };
 
-function mapOnchainStateToBlockchainState(onchainState: number): ReviewBlockchainState | null {
-	return ONCHAIN_TO_BLOCKCHAIN_STATE[onchainState] ?? null;
+/**
+ * Legacy `getEscrow` uint8 values use a **different** numbering than payment contracts.
+ * For example, legacy **10** is a terminal “funds released” style state, while payment
+ * contracts use **10** for `work_in_progress`. Never use PAYMENT_CONTRACT_ONCHAIN_STATE
+ * for `getEscrow` results.
+ *
+ * States **12–16** are legacy dispute variants, all mapped to `in_dispute` (see
+ * `LEGACY_ESCROW_DISPUTE_STATE_*` in `mapOnchainStateToBlockchainState`).
+ */
+const LEGACY_ESCROW_DISPUTE_STATE_MIN = 12;
+const LEGACY_ESCROW_DISPUTE_STATE_MAX = 16;
+
+const LEGACY_GET_ESCROW_ONCHAIN_STATE: Partial<Record<number, ReviewBlockchainState>> = {
+	0: 'funded',
+	1: 'in_dispute',
+	2: 'dispute_resolved',
+	3: 'dispute_unresolved',
+	4: 'completed',
+	5: 'cancelled',
+	6: 'funded',
+	7: 'work_in_progress',
+	8: 'completed',
+	9: 'funded',
+	10: 'funds_released',
+	11: 'completed'
+};
+
+export function mapOnchainStateToBlockchainState(
+	rawState: number,
+	detectedMethod: 'getPaymentContractState' | 'getEscrow'
+): ReviewBlockchainState | null {
+	if (detectedMethod === 'getEscrow') {
+		if (
+			rawState >= LEGACY_ESCROW_DISPUTE_STATE_MIN &&
+			rawState <= LEGACY_ESCROW_DISPUTE_STATE_MAX
+		) {
+			return 'in_dispute';
+		}
+		return LEGACY_GET_ESCROW_ONCHAIN_STATE[rawState] ?? null;
+	}
+	return PAYMENT_CONTRACT_ONCHAIN_STATE[rawState] ?? null;
 }
 
 // ── RPC Configuration ────────────────────────────────────────────────────────
@@ -61,19 +104,25 @@ export function parseRpcConfigFromEnv(env: Record<string, string | undefined>): 
 	};
 }
 
-// ── Contract Verifier (version-agnostic) ─────────────────────────────────────
+// ── Version-Agnostic Contract Verifier ───────────────────────────────────────
 
+/**
+ * Version-agnostic settlement verifier.
+ * 
+ * Automatically detects which function the contract supports:
+ *   1. First tries getPaymentContractState (newer contracts)
+ *   2. If that fails/reverts, tries getEscrow (legacy contracts)
+ * 
+ * Results are returned in a unified format regardless of which method succeeded.
+ */
 export class ContractSettlementVerifier implements ISettlementVerifier {
-	public readonly supportedVersion: string;
 	private client: PublicClient | null = null;
 
 	constructor(
 		private readonly contractAddress: string,
 		private readonly chain: ReviewChain,
-		rpcUrl: string,
-		version: string
+		rpcUrl: string
 	) {
-		this.supportedVersion = version;
 		try {
 			const chainConfig = chain === 'rsk' ? rootstock : rootstock;
 			this.client = createPublicClient({
@@ -90,25 +139,69 @@ export class ContractSettlementVerifier implements ISettlementVerifier {
 		}
 	}
 
-	async getSettlementState(paymentId: bigint): Promise<{
+	async getSettlementState(settlementId: bigint): Promise<{
 		state: number;
 		exists: boolean;
 		tasker: string;
 		taskee: string;
+		detectedMethod: 'getPaymentContractState' | 'getEscrow';
 	}> {
 		if (!this.client) {
 			throw new Error('RPC client not available');
 		}
 
-		const result = await this.client.readContract({
-			address: this.contractAddress as `0x${string}`,
-			abi: VERIFICATION_ABI,
-			functionName: 'getPaymentContractState',
-			args: [Number(paymentId)]
-		});
+		// Try getPaymentContractState first (newer contracts)
+		try {
+			const result = await this.client.readContract({
+				address: this.contractAddress as `0x${string}`,
+				abi: V2_PAYMENT_STATE_ABI,
+				functionName: 'getPaymentContractState',
+				args: [Number(settlementId)]
+			});
 
-		const [state, exists, tasker, taskee] = result as [number, boolean, string, string, boolean];
-		return { state, exists, tasker, taskee };
+			const [state, exists, tasker, taskee] = result;
+			return { 
+				state, 
+				exists, 
+				tasker, 
+				taskee, 
+				detectedMethod: 'getPaymentContractState' as const
+			};
+		} catch (error) {
+			structuredLogger.info('getPaymentContractState failed, trying getEscrow', {
+				settlementId: settlementId.toString(),
+				error: error instanceof Error ? error.message : 'unknown'
+			});
+		}
+
+		// Fallback to getEscrow (legacy contracts)
+		try {
+			const escrow = await this.client.readContract({
+				address: this.contractAddress as `0x${string}`,
+				abi: LEGACY_ESCROW_ABI,
+				functionName: 'getEscrow',
+				args: [settlementId]
+			});
+
+			// Check if escrow exists (zero address client means not found)
+			const zeroAddress = '0x0000000000000000000000000000000000000000';
+			const exists = escrow.client !== zeroAddress && escrow.client !== '0x';
+
+			return {
+				state: escrow.state,
+				exists,
+				tasker: escrow.client,
+				taskee: escrow.freelancer,
+				detectedMethod: 'getEscrow' as const
+			};
+		} catch (error) {
+			structuredLogger.warn('Both getPaymentContractState and getEscrow failed', {
+				settlementId: settlementId.toString(),
+				contractAddress: this.contractAddress,
+				error: error instanceof Error ? error.message : 'unknown'
+			});
+			throw error;
+		}
 	}
 }
 
@@ -169,7 +262,7 @@ export interface DynamicSettlementResolverOptions {
 /**
  * Verifies settlement state on-chain before allowing review attestation.
  *
- * Fallback chain: Dynamic (RPC → chain) → Fallback (static registry) → null
+ * Resolution chain: Dynamic (RPC → auto-detect method) → Fallback (static registry) → null
  */
 export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 	private readonly verifiers = new Map<string, ContractSettlementVerifier>();
@@ -177,13 +270,13 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 	constructor(private readonly options: DynamicSettlementResolverOptions) {}
 
 	private getOrCreateVerifier(chain: ReviewChain, contractAddress: string): ContractSettlementVerifier {
-		const vKey = `${chain}:${contractAddress.toLowerCase()}`;
-		const existing = this.verifiers.get(vKey);
+		const key = `${chain}:${contractAddress.toLowerCase()}`;
+		const existing = this.verifiers.get(key);
 		if (existing) return existing;
 
 		const rpcUrl = this.options.rpcConfig.rskMainnetRpcUrl;
-		const verifier = new ContractSettlementVerifier(contractAddress, chain, rpcUrl, '2');
-		this.verifiers.set(vKey, verifier);
+		const verifier = new ContractSettlementVerifier(contractAddress, chain, rpcUrl);
+		this.verifiers.set(key, verifier);
 		return verifier;
 	}
 
@@ -208,67 +301,113 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 			return cached.data;
 		}
 
-		// 2. Try dynamic on-chain resolution
+		// 2. Try dynamic on-chain resolution (auto-detects contract method)
 		try {
-			const verifier = this.getOrCreateVerifier(input.chain, input.contractAddress);
-			const state = await verifier.getSettlementState(BigInt(input.settlementId));
-
-			if (!state.exists) {
-				structuredLogger.warn('Settlement not found on chain', {
-					chain: input.chain,
-					contractAddress: input.contractAddress,
-					settlementId: input.settlementId
-				});
-				return this.tryFallback(input);
-			}
-
-			const blockchainState = mapOnchainStateToBlockchainState(state.state);
-			if (!blockchainState) {
-				structuredLogger.warn('Unknown on-chain state', {
-					onchainState: state.state,
-					settlementId: input.settlementId
-				});
-				return this.tryFallback(input);
-			}
-
-			// Build a settlement record from on-chain data.
-			// Participant identities are verified against the input,
-			// wallet→npub binding is verified cryptographically by the dual-signature flow.
-			const record: ReviewableSettlementRecord = {
-				subjectType: input.subjectType as ReviewableSettlementRecord['subjectType'],
-				subjectId: input.subjectId,
-				settlementType: input.settlementType as ReviewableSettlementRecord['settlementType'],
-				settlementId: input.settlementId,
-				chain: input.chain,
-				asset: input.asset as ReviewableSettlementRecord['asset'],
-				contractAddress: input.contractAddress,
-				contractVersion: verifier.supportedVersion,
-				reviewerRole: 'tasker',
-				revieweeRole: 'taskee',
-				reviewerNpub: input.reviewerNpub,
-				revieweeNpub: input.revieweeNpub,
-				reviewerWallet: input.reviewerWallet,
-				revieweeWallet: input.revieweeWallet,
-				blockchainState,
-				completedAt: 0,
-				reviewableAt: 0,
-				contractOutcome: this.deriveContractOutcome(blockchainState),
-				status: 'reviewable',
-				sourceVisibility: 'public_present',
-				sourcePresentation: {},
-				sourceRefs: {}
-			};
-
-			await this.options.cache.set(cacheKey, record, this.options.cacheTtlMs);
-			return record;
+			const result = await this.tryOnchainResolution(input, cacheKey);
+			if (result) return result;
 		} catch (error) {
-			structuredLogger.warn('Dynamic resolution failed, trying fallback', {
+			structuredLogger.warn('On-chain resolution failed', {
 				error: error instanceof Error ? error.message : 'unknown',
-				settlementId: input.settlementId,
-				chain: input.chain
+				settlementId: input.settlementId
 			});
-			return this.tryFallback(input);
 		}
+
+		// 3. Try fallback registry
+		return await this.tryFallback(input);
+	}
+
+	private async tryOnchainResolution(
+		input: Parameters<typeof this.resolve>[0],
+		cacheKey: string
+	): Promise<ReviewableSettlementRecord | null> {
+		const verifier = this.getOrCreateVerifier(input.chain, input.contractAddress);
+		const state = await verifier.getSettlementState(BigInt(input.settlementId));
+
+		if (!state.exists) {
+			structuredLogger.info('Settlement not found on chain', {
+				chain: input.chain,
+				contractAddress: input.contractAddress,
+				settlementId: input.settlementId,
+				detectedMethod: state.detectedMethod
+			});
+			return null;
+		}
+
+		const blockchainState = mapOnchainStateToBlockchainState(state.state, state.detectedMethod);
+		if (!blockchainState) {
+			structuredLogger.warn('Unknown on-chain state', {
+				onchainState: state.state,
+				settlementId: input.settlementId,
+				detectedMethod: state.detectedMethod
+			});
+			return null;
+		}
+
+		// Hint for observability only — settlement uses detectedMethod + mapping, not this string
+		const contractVersion = state.detectedMethod === 'getPaymentContractState' ? 'payment' : 'legacy_escrow';
+
+		return this.buildSettlementRecord(input, state, blockchainState, contractVersion, cacheKey);
+	}
+
+	private async buildSettlementRecord(
+		input: Parameters<typeof this.resolve>[0],
+		state: { state: number; exists: boolean; tasker: string; taskee: string },
+		blockchainState: ReviewBlockchainState,
+		contractVersion: string,
+		cacheKey: string
+	): Promise<ReviewableSettlementRecord | null> {
+		// Determine reviewer/reviewee roles based on which party is submitting the review
+		const normalizedReviewerWallet = input.reviewerWallet.toLowerCase();
+		const normalizedTaskerWallet = state.tasker.toLowerCase();
+		const normalizedTaskeeWallet = state.taskee.toLowerCase();
+
+		let reviewerRole: 'tasker' | 'taskee';
+		let revieweeRole: 'tasker' | 'taskee';
+
+		if (normalizedReviewerWallet === normalizedTaskerWallet) {
+			reviewerRole = 'tasker';
+			revieweeRole = 'taskee';
+		} else if (normalizedReviewerWallet === normalizedTaskeeWallet) {
+			reviewerRole = 'taskee';
+			revieweeRole = 'tasker';
+		} else {
+			structuredLogger.warn('Reviewer wallet does not match on-chain participants', {
+				reviewerWallet: normalizedReviewerWallet,
+				taskerWallet: normalizedTaskerWallet,
+				taskeeWallet: normalizedTaskeeWallet,
+				settlementId: input.settlementId,
+				contractVersion
+			});
+			return null;
+		}
+
+		const record: ReviewableSettlementRecord = {
+			subjectType: input.subjectType as ReviewableSettlementRecord['subjectType'],
+			subjectId: input.subjectId,
+			settlementType: input.settlementType as ReviewableSettlementRecord['settlementType'],
+			settlementId: input.settlementId,
+			chain: input.chain,
+			asset: input.asset as ReviewableSettlementRecord['asset'],
+			contractAddress: input.contractAddress,
+			contractVersion,
+			reviewerRole,
+			revieweeRole,
+			reviewerNpub: input.reviewerNpub,
+			revieweeNpub: input.revieweeNpub,
+			reviewerWallet: input.reviewerWallet,
+			revieweeWallet: input.revieweeWallet,
+			blockchainState,
+			completedAt: 0,
+			reviewableAt: 0,
+			contractOutcome: this.deriveContractOutcome(blockchainState),
+			status: 'reviewable',
+			sourceVisibility: 'public_present',
+			sourcePresentation: {},
+			sourceRefs: {}
+		};
+
+		await this.options.cache.set(cacheKey, record, this.options.cacheTtlMs);
+		return record;
 	}
 
 	private deriveContractOutcome(state: ReviewBlockchainState): ReviewContractOutcome {
@@ -287,7 +426,7 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 		}
 	}
 
-	private tryFallback(input: {
+	private async tryFallback(input: {
 		subjectType: string;
 		subjectId: string;
 		settlementType: string;
@@ -299,13 +438,14 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 		revieweeNpub: string;
 		reviewerWallet: string;
 		revieweeWallet: string;
-	}): ReviewableSettlementRecord | null {
+	}): Promise<ReviewableSettlementRecord | null> {
 		if (!this.options.fallback) return null;
 
 		structuredLogger.info('Falling back to static settlement registry', {
 			settlementId: input.settlementId
 		});
 
-		return this.options.fallback.resolve(input);
+		const result = await this.options.fallback.resolve(input as Parameters<ReviewSettlementRegistry['resolve']>[0]);
+		return result;
 	}
 }

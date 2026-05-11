@@ -11,7 +11,7 @@
     "test:watch": "vitest --config vitest.config.ts"
   },
   "dependencies": {
-    "@bittasker/reviews-contracts": "file:./packages/reviews-contracts/bittasker-reviews-contracts-0.0.1.tgz",
+    "@bittasker/reviews-contracts": "file:packages/reviews-contracts/bittasker-reviews-contracts-0.0.1.tgz",
     "@noble/curves": "^1.9.2",
     "@noble/hashes": "^1.8.0",
     "hono": "^4.6.20",

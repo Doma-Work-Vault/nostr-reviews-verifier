@@ -28,4 +28,10 @@ export {
 } from './canonical';
 export * from './reply';
 export * from './status';
-export { VERIFICATION_ABI } from './abi/verification-abi';
+export { 
+	V2_PAYMENT_STATE_ABI, 
+	LEGACY_ESCROW_ABI, 
+	VERIFICATION_ABI, 
+	ONCHAIN_STATE_MAP, 
+	type OnchainStateValue 
+} from './abi/verification-abi';

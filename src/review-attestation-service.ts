@@ -25,8 +25,7 @@ import {
 	normalizeHex,
 	parseHexOrNpub,
 	parseNsecToHex,
-	reviewEventPayloadSchema,
-	reviewableSettlementRecordSchema
+	reviewEventPayloadSchema
 } from './contracts';
 import type { ReviewNostrPublisher } from './nostr-publisher';
 import type { ReviewIssuedSlotRecord, ReviewStateClient } from './state';
@@ -38,6 +37,7 @@ import {
 	parseReviewChallengeTokenPayload,
 	type ReviewChallengeTokenPayload
 } from './challenge-token';
+import { structuredLogger } from './logger';
 
 interface RequestMeta {
 	clientIp: string;
@@ -220,6 +220,7 @@ export class ReviewAttestationService {
 	async createChallenge(input: ChallengeRequest, meta: RequestMeta): Promise<ChallengeResponse> {
 		const now = meta.now;
 		const reviewDraftHash = normalizeHex(input.reviewDraftHash);
+
 		const settlement = await this.resolveSettlement(input);
 		if (!settlement) {
 			throw new ReviewApiError('resolver_not_found', 404);
@@ -321,8 +322,9 @@ export class ReviewAttestationService {
 		let reviewPayload;
 		try {
 			reviewPayload = reviewEventPayloadSchema.parse(JSON.parse(reviewEvent.content));
-		} catch {
-			throw new ReviewApiError('review_event_invalid', 400);
+		} catch (parseErr) {
+			structuredLogger.error("review_event_invalid: schema parse failed", parseErr instanceof Error ? parseErr : undefined, { rawContent: reviewEvent.content.substring(0, 200) });
+			throw new ReviewApiError("review_event_invalid", 400, "Schema parse or content validation failed");
 		}
 
 		const computedReviewDraftHash = await computeReviewDraftHashFromPayload(reviewPayload);
@@ -330,7 +332,7 @@ export class ReviewAttestationService {
 			reviewPayload.reviewDraftHash !== reviewDraftHash ||
 			computedReviewDraftHash !== reviewDraftHash
 		) {
-			throw new ReviewApiError('review_event_invalid', 400);
+			throw new ReviewApiError('review_event_invalid', 400, 'Hash mismatch');
 		}
 
 		const normalizedRevieweePubkey = parseHexOrNpub(input.revieweeNpub);
@@ -342,10 +344,28 @@ export class ReviewAttestationService {
 			reviewPayload.revieweeRole !== settlement.revieweeRole ||
 			reviewPayload.contractOutcome !== settlement.contractOutcome
 		) {
-			throw new ReviewApiError('review_event_invalid', 400);
+			structuredLogger.error("review_event_invalid: settlement mismatch", undefined, {
+				payloadSubjType: reviewPayload.subjectType,
+				settlementSubjType: settlement.subjectType,
+				payloadSettType: reviewPayload.settlementType,
+				settlementSettType: settlement.settlementType,
+				payloadRevieweePK: reviewPayload.revieweePubkey.toLowerCase(),
+				inputRevieweeNpub: normalizedRevieweePubkey,
+				payloadReviewerRole: reviewPayload.reviewerRole,
+				settlementReviewerRole: settlement.reviewerRole,
+				payloadRevieweeRole: reviewPayload.revieweeRole,
+				settlementRevieweeRole: settlement.revieweeRole,
+				payloadOutcome: reviewPayload.contractOutcome,
+				settlementOutcome: settlement.contractOutcome
+			});
+				throw new ReviewApiError('review_event_invalid', 400, 'Settlement field mismatch');
 		}
 
 		const issuer = this.getIssuer(now);
+		
+		// Extract comment from review payload
+		const reviewComment = reviewPayload.content?.en?.comment || reviewPayload.content?.es?.comment || '';
+		
 		const buildEvent = (issuedAt: number) => {
 			const attestationPayload: AttestationEventPayload = {
 				schemaVersion: 1,
@@ -360,7 +380,12 @@ export class ReviewAttestationService {
 				contractOutcome: settlement.contractOutcome,
 				issuedAt,
 				expiresAt: issuedAt + this.config.attestationTtlMs,
-				keyId: issuer.keyId
+				keyId: issuer.keyId,
+				rating: {
+					overallRating: reviewPayload.rating.overallRating,
+					categoryRatings: reviewPayload.rating.categoryRatings
+				},
+				comment: reviewComment || undefined
 			};
 
 			const event = finalizeEvent(
@@ -369,6 +394,7 @@ export class ReviewAttestationService {
 					created_at: Math.floor(issuedAt / 1000),
 					tags: [
 						['e', reviewEvent.id],
+						['e', settlement.subjectId],
 						['d', slotHash],
 						['p', reviewerPubkey],
 						['p', normalizedRevieweePubkey],

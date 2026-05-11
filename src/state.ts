@@ -85,7 +85,10 @@ const issuerRegistryEntriesSchema = z.array(
 	z
 		.object({
 			keyId: z.string().min(1),
-			pubkey: z.string().regex(/^[a-f0-9]{64}$/i),
+			pubkey: z.union([
+					z.string().regex(/^[a-f0-9]{64}$/i),
+					z.string().regex(/^npub1[023456789ac-hj-np-z]+$/)
+				]),
 			status: z.enum(['active', 'retired']),
 			validFrom: z.number().int().nonnegative(),
 			validUntil: z.number().int().nonnegative().nullable().optional()

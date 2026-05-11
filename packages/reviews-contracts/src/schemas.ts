@@ -294,7 +294,12 @@ export const attestationEventPayloadSchema = z
 		contractOutcome: reviewContractOutcomeSchema,
 		issuedAt: unixTimestampSchema,
 		expiresAt: unixTimestampSchema,
-		keyId: z.string().min(1)
+		keyId: z.string().min(1),
+		rating: z.object({
+			overallRating: z.number().int().min(1).max(5),
+			categoryRatings: reviewCategoryRatingsSchema
+		}).optional(),
+		comment: z.string().optional()
 	})
 	.strict()
 	.superRefine((value, ctx) => {
@@ -310,7 +315,7 @@ export const attestationEventPayloadSchema = z
 export const issuerRegistryEntrySchema = z
 	.object({
 		keyId: z.string().min(1),
-		pubkey: hexPubkeySchema,
+		pubkey: nostrPubkeySchema,
 		status: z.enum(['active', 'retired']),
 		validFrom: unixTimestampSchema,
 		validUntil: unixTimestampSchema.nullable().optional()
