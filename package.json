@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --config wrangler.toml",
-    "deploy": "wrangler deploy --config wrangler.toml",
+    "deploy:dev": "wrangler deploy --config wrangler.toml --env dev",
+    "deploy:main": "wrangler deploy --config wrangler.toml --env main",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts"
   },
   "dependencies": {
-    "@bittasker/reviews-contracts": "@bittasker/reviews-contracts@0.0.1",
+    "@bittasker/reviews-contracts": "^0.0.1",
     "@noble/curves": "^1.9.2",
     "@noble/hashes": "^1.8.0",
     "hono": "^4.6.20",

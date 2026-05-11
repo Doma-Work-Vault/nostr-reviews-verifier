@@ -18,11 +18,7 @@ import {
 import { CloudflareReviewStateClient, type ReviewStateNamespace } from './state';
 import { getIssuerRegistry } from './issuer-registry';
 import { z } from 'zod';
-import {
-	RelayReviewNostrPublisher,
-	parseNostrRelaysFromEnv,
-	type ReviewNostrPublisher
-} from './nostr-publisher';
+import { RelayReviewNostrPublisher, type ReviewNostrPublisher } from './nostr-publisher';
 import { corsMiddleware } from './middleware/cors';
 import { structuredLogger } from './logger';
 import {
@@ -43,7 +39,8 @@ export interface ReviewsAttestationEnv {
 	REVIEW_ATTESTATION_ISSUER_NPUB?: string;
 	REVIEW_ATTESTATION_ISSUER_NSEC?: string;
 	REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON?: string;
-	REVIEW_ATTESTATION_NOSTR_RELAYS_JSON?: string;
+	/** TOML `string[]` in `wrangler.toml` — omit from `.dev.vars` (string override breaks the binding). */
+	REVIEW_ATTESTATION_NOSTR_RELAYS?: string[];
 	REVIEW_CHALLENGE_TTL_SECONDS?: string;
 	REVIEW_ATTESTATION_TTL_SECONDS?: string;
 	REVIEW_RATE_LIMIT_WINDOW_SECONDS?: string;
@@ -328,10 +325,27 @@ function respondWithServiceError(
 	);
 }
 
+function trimRelayUrls(relays: string[] | undefined): string[] {
+	if (relays === undefined) {
+		return [];
+	}
+	if (!Array.isArray(relays)) {
+		throw new Error(
+			'REVIEW_ATTESTATION_NOSTR_RELAYS must be string[] from wrangler.toml [vars]. If you set it in .dev.vars, remove that line — string values override the array binding and break this worker.'
+		);
+	}
+	if (relays.length === 0) {
+		return [];
+	}
+	return relays.map((r) => r.trim()).filter((r) => r.length > 0);
+}
+
 function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAppOptions = {}) {
-	const cacheTtlSeconds = env.SETTLEMENT_CACHE_TTL_SECONDS
+	const parsedCacheTtl = env.SETTLEMENT_CACHE_TTL_SECONDS
 		? parseInt(env.SETTLEMENT_CACHE_TTL_SECONDS, 10)
 		: 300;
+	const cacheTtlSeconds =
+		Number.isFinite(parsedCacheTtl) && parsedCacheTtl > 0 ? parsedCacheTtl : 300;
 
 	const rpcConfigEnv: Record<string, string | undefined> = {
 		RSK_RPC_URL: env.RSK_RPC_URL,
@@ -342,19 +356,18 @@ function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAp
 		BSC_TESTNET_RPC_URL: env.BSC_TESTNET_RPC_URL
 	};
 
-	const settlementRegistry = new DynamicSettlementResolver({
+	const settlementResolver = new DynamicSettlementResolver({
 		rpcConfig: parseRpcConfigFromEnv(rpcConfigEnv),
 		cache: new InMemorySettlementCache(),
-		cacheTtlMs: cacheTtlSeconds * 1000,
-		fallback: null
+		cacheTtlMs: cacheTtlSeconds * 1000
 	});
 
 	const publisher =
 		options.publisher ??
-		new RelayReviewNostrPublisher(parseNostrRelaysFromEnv(env.REVIEW_ATTESTATION_NOSTR_RELAYS_JSON), 10_000);
+		new RelayReviewNostrPublisher(trimRelayUrls(env.REVIEW_ATTESTATION_NOSTR_RELAYS), 10_000);
 	return new ReviewAttestationService({
 		state: new CloudflareReviewStateClient(env.REVIEW_STATE),
-		settlementRegistry,
+		settlementResolver,
 		publisher,
 		issuerRegistryEnv: env,
 		config: parseRuntimeConfigFromEnv(env),
@@ -365,7 +378,7 @@ function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAp
 }
 
 function createReplyService(env: ReviewsAttestationEnv, options: ReviewsAttestationAppOptions = {}) {
-	const relays = parseNostrRelaysFromEnv(env.REVIEW_ATTESTATION_NOSTR_RELAYS_JSON);
+	const relays = trimRelayUrls(env.REVIEW_ATTESTATION_NOSTR_RELAYS);
 	const pool = new SimplePool({ enableReconnect: false, enablePing: false });
 
 	const publisher =

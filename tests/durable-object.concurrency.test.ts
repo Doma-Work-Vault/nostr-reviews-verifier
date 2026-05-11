@@ -224,7 +224,7 @@ function buildService() {
 		slotHmacSecret,
 
 		state,
-		settlementRegistry: {
+		settlementResolver: {
 			resolve: () => settlement
 		},
 		publisher,

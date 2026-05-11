@@ -105,7 +105,7 @@ export class ReviewApiError extends Error {
 	}
 }
 
-export interface ReviewSettlementRegistry {
+export interface SettlementResolver {
 	resolve(input: {
 		subjectType: ReviewSubjectType;
 		subjectId: string;
@@ -164,7 +164,7 @@ export class ReviewAttestationService {
 	constructor(
 		private readonly deps: {
 			state: ReviewStateClient;
-			settlementRegistry: ReviewSettlementRegistry;
+			settlementResolver: SettlementResolver;
 			publisher: ReviewNostrPublisher;
 			issuerRegistryEnv: {
 				REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON?: string;
@@ -508,7 +508,7 @@ export class ReviewAttestationService {
 	}
 
 	private async resolveSettlement(input: ChallengeRequest | AttestationRequest): Promise<ReviewableSettlementRecord | null> {
-		return this.deps.settlementRegistry.resolve({
+		return this.deps.settlementResolver.resolve({
 			subjectType: input.subjectType,
 			subjectId: input.subjectId,
 			settlementType: input.settlementType,

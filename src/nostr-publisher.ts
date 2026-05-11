@@ -50,16 +50,3 @@ export class MockReviewNostrPublisher implements ReviewNostrPublisher {
 		this.publishedEvents.push(event);
 	}
 }
-
-export function parseNostrRelaysFromEnv(json?: string): string[] {
-	if (!json || !json.trim()) {
-		return [];
-	}
-
-	const parsed = JSON.parse(json) as unknown;
-	if (!Array.isArray(parsed) || parsed.some((relay) => typeof relay !== 'string' || !relay.trim())) {
-		throw new Error('Invalid review attestation relay registry');
-	}
-
-	return parsed.map((relay) => relay.trim());
-}

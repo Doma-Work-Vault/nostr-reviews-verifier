@@ -7,7 +7,7 @@ import type {
 	ReviewContractOutcome,
 	ReviewableSettlementRecord
 } from './contracts';
-import type { ReviewSettlementRegistry } from './review-attestation-service';
+import type { SettlementResolver } from './review-attestation-service';
 import { structuredLogger } from './logger';
 
 // ── Verifier interface ───────────────────────────────────────────────────────
@@ -174,7 +174,7 @@ export class ContractSettlementVerifier implements ISettlementVerifier {
 			});
 		}
 
-		// Fallback to getEscrow (legacy contracts)
+		// Legacy contracts: getEscrow(uint256)
 		try {
 			const escrow = await this.client.readContract({
 				address: this.contractAddress as `0x${string}`,
@@ -256,15 +256,15 @@ export interface DynamicSettlementResolverOptions {
 	rpcConfig: SettlementRpcConfig;
 	cache: SettlementCache;
 	cacheTtlMs: number;
-	fallback: ReviewSettlementRegistry | null;
 }
 
 /**
  * Verifies settlement state on-chain before allowing review attestation.
  *
- * Resolution chain: Dynamic (RPC → auto-detect method) → Fallback (static registry) → null
+ * Resolution: in-memory cache (TTL) → on-chain RPC (`getPaymentContractState`, then `getEscrow`).
+ * If the chain cannot resolve the settlement, returns null (no static or off-chain fallback).
  */
-export class DynamicSettlementResolver implements ReviewSettlementRegistry {
+export class DynamicSettlementResolver implements SettlementResolver {
 	private readonly verifiers = new Map<string, ContractSettlementVerifier>();
 
 	constructor(private readonly options: DynamicSettlementResolverOptions) {}
@@ -301,7 +301,7 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 			return cached.data;
 		}
 
-		// 2. Try dynamic on-chain resolution (auto-detects contract method)
+		// 2. On-chain resolution (auto-detects contract method); failures → null
 		try {
 			const result = await this.tryOnchainResolution(input, cacheKey);
 			if (result) return result;
@@ -312,8 +312,7 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 			});
 		}
 
-		// 3. Try fallback registry
-		return await this.tryFallback(input);
+		return null;
 	}
 
 	private async tryOnchainResolution(
@@ -424,28 +423,5 @@ export class DynamicSettlementResolver implements ReviewSettlementRegistry {
 			default:
 				return 'completed';
 		}
-	}
-
-	private async tryFallback(input: {
-		subjectType: string;
-		subjectId: string;
-		settlementType: string;
-		settlementId: string;
-		chain: ReviewChain;
-		asset: string;
-		contractAddress: string;
-		reviewerNpub: string;
-		revieweeNpub: string;
-		reviewerWallet: string;
-		revieweeWallet: string;
-	}): Promise<ReviewableSettlementRecord | null> {
-		if (!this.options.fallback) return null;
-
-		structuredLogger.info('Falling back to static settlement registry', {
-			settlementId: input.settlementId
-		});
-
-		const result = await this.options.fallback.resolve(input as Parameters<ReviewSettlementRegistry['resolve']>[0]);
-		return result;
 	}
 }

@@ -40,7 +40,7 @@ This repository also contains the publishable npm package **`@bittasker/reviews-
 | **One reply per reviewed review** | Separate reply slot keyed by parent review event id. |
 | **Dynamic settlement resolution** | Reads contract state over JSON-RPC; supports **V2** `getPaymentContractState` and legacy **`getEscrow`** with distinct on-chain state mappings; in-memory cache with configurable TTL. |
 | **Rate limiting** | Per-IP and per-slot limits enforced in the Durable Object (challenge + attestation paths; reply paths included). |
-| **Multi-relay publish** | `nostr-tools` `SimplePool` publishes signed attestation events to `REVIEW_ATTESTATION_NOSTR_RELAYS_JSON`. |
+| **Multi-relay publish** | `nostr-tools` `SimplePool` publishes to relays in `REVIEW_ATTESTATION_NOSTR_RELAYS` (**`string[]`** from `wrangler.toml` `[vars]` / `[env.*.vars]` — not from `.dev.vars`). |
 | **Issuer registry** | `GET /review-attestation-issuers` — supports rotation metadata (`keyId`, `validFrom`, `validUntil`, `status`). |
 | **CORS** | `ALLOWED_ORIGINS` — comma-separated list for browser clients. |
 | **Structured logging** | JSON logs (`structuredLogger`) for operations and errors. |
@@ -84,7 +84,7 @@ This repository also contains the publishable npm package **`@bittasker/reviews-
                     └────────────────────────────────────────────────────────────┘
 ```
 
-Settlement data is **not** loaded from a static JSON file in production: the **`DynamicSettlementResolver`** talks to the chain (with cache). A pluggable fallback hook exists in code for optional future registries.
+Settlement data is resolved **on-chain** (with a short **in-memory TTL cache** of the last successful read). There is **no** static or off-chain settlement fallback: if RPC cannot resolve the contract, the request fails with `resolver_not_found`.
 
 ---
 
@@ -155,13 +155,13 @@ console.log('REVIEW_SLOT_HMAC_SECRET=' + bytesToHex(random32));
 
 ### Required for typical operation
 
-| Variable | Description |
-|----------|-------------|
-| `REVIEW_ATTESTATION_ISSUER_NPUB` | Issuer npub (public). |
-| `REVIEW_ATTESTATION_ISSUER_NSEC` | Issuer nsec (secret — use **Wrangler secret** in production). |
-| `REVIEW_SLOT_HMAC_SECRET` | **≥32** characters or **64-char hex**; used for settlement slot HMAC (secret in production). |
-| `REVIEW_ATTESTATION_NOSTR_RELAYS_JSON` | JSON array of `wss://` relay URLs for publishing (often a secret in production). |
-| `ALLOWED_ORIGINS` | Comma-separated browser origins allowed by CORS (e.g. `https://app.example.com,http://localhost:5173`). |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `REVIEW_ATTESTATION_ISSUER_NPUB` | Yes | Issuer npub (public). |
+| `REVIEW_ATTESTATION_ISSUER_NSEC` | Yes | Issuer nsec (use **Wrangler secret** in production). |
+| `REVIEW_SLOT_HMAC_SECRET` | Yes | **≥32** characters or **64-char hex**; settlement slot HMAC (secret in production). |
+| `REVIEW_ATTESTATION_NOSTR_RELAYS` | Yes (non-empty) | **`string[]`** — TOML array of `wss://` URLs in `wrangler.toml` `[vars]` (and `[env.*.vars]`). **Do not set in `.dev.vars`** (each line is a string and would override the typed array). |
+| `ALLOWED_ORIGINS` | Yes for browsers | Comma-separated origins for CORS. |
 
 ### Optional (defaults exist)
 
@@ -194,8 +194,9 @@ REVIEW_ATTESTATION_ISSUER_KEY_ID=reviews-attestation-issuer-v1
 REVIEW_ATTESTATION_ISSUER_NPUB=npub1...
 REVIEW_ATTESTATION_ISSUER_NSEC=nsec1...
 REVIEW_SLOT_HMAC_SECRET=<64-char-hex-or-long-random-string>
-REVIEW_ATTESTATION_NOSTR_RELAYS_JSON=["wss://relay.example.com"]
 ALLOWED_ORIGINS=http://localhost:5173
+
+# Relays: set REVIEW_ATTESTATION_NOSTR_RELAYS in wrangler.toml [vars] only (TOML string[]).
 
 REVIEW_ATTESTATION_ISSUER_REGISTRY_JSON=[]
 REVIEW_CHALLENGE_TTL_SECONDS=900
@@ -396,7 +397,7 @@ Use **`GET /review-attestation-issuers`** for issuer pubkeys and metadata.
 | **Review draft hash** | SHA-256 over canonical review payload. |
 | **Slot HMAC** | Server secret; stable id per settlement slot without exposing raw ids in the `d` tag context. |
 | **Durable Object** | Atomic slot claims + rate limit state. |
-| **Secrets** | `REVIEW_ATTESTATION_ISSUER_NSEC`, `REVIEW_SLOT_HMAC_SECRET`, relay JSON — use **Wrangler secrets** in production, `.dev.vars` locally (gitignored). |
+| **Secrets** | `REVIEW_ATTESTATION_ISSUER_NSEC`, `REVIEW_SLOT_HMAC_SECRET` — use **Wrangler secrets** in production, `.dev.vars` locally (gitignored). Relays stay in `[vars]` as non-secret. |
 
 Rate limits (enforced in DO; approximate defaults documented in tests / `state.ts`):
 
@@ -454,23 +455,37 @@ Covers HTTP routes, attestation/reply flows, settlement resolver behavior, DO co
 
 ## Deployment (Cloudflare Workers)
 
+Two Wrangler environments are defined in `wrangler.toml`:
+
+| Environment | Command | Worker name | Relays (default in repo) |
+|-------------|---------|---------------|---------------------------|
+| **dev** (default) | `npm run deploy` or `npm run deploy:dev` | `reviews-attestation-backend-dev` | `wss://relay1-dev.bittasker.com` |
+| **main** | `npm run deploy:main` | `reviews-attestation-backend` | `wss://relay1.bittasker.com` |
+
+Each environment is a **separate Worker deployment** (separate URL / settings). That is the normal Cloudflare pattern for dev vs production; there is no single Worker that switches relays at runtime unless you build that yourself (not recommended).
+
 1. **Login:** `npx wrangler login`
-2. **Non-secret vars:** set in `wrangler.toml` `[vars]` or Cloudflare dashboard (e.g. `REVIEW_ATTESTATION_ISSUER_NPUB`, `ALLOWED_ORIGINS`, RPC URLs if not secret).
-3. **Secrets** (minimum typical set):
+2. **Non-secret vars:** already in `wrangler.toml` per environment; adjust there or in the dashboard. **`[env.main.vars]`** overrides only `REVIEW_ATTESTATION_NOSTR_RELAYS` and `ALLOWED_ORIGINS` in this repo; other keys inherit from the top-level `[vars]`.
+3. **Secrets** (set per environment with `--env`):
 
 ```bash
-npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC
-npx wrangler secret put REVIEW_SLOT_HMAC_SECRET
-npx wrangler secret put REVIEW_ATTESTATION_NOSTR_RELAYS_JSON
+npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC --env dev
+npx wrangler secret put REVIEW_SLOT_HMAC_SECRET --env dev
+
+npx wrangler secret put REVIEW_ATTESTATION_ISSUER_NSEC --env main
+npx wrangler secret put REVIEW_SLOT_HMAC_SECRET --env main
 ```
 
-4. **Deploy:** `npm run deploy`
+4. **Deploy**
 
-**Note:** `wrangler.toml` in this repo defines a **single** default Worker environment. There are **no** `[env.staging]` / `[env.production]` blocks unless you add them. Use **separate Cloudflare accounts or Worker names** for true isolation, or extend `wrangler.toml` with named environments before using `wrangler deploy --env <name>`.
+```bash
+npm run deploy:dev   # or: npm run deploy
+npm run deploy:main
+```
 
-**Logs:** `npx wrangler tail`
+**Logs:** `npx wrangler tail --env dev` or `--env main`
 
-**Durable Objects:** migrations are already declared in `wrangler.toml` for `ReviewStateDO`. First deploy to a fresh namespace must succeed on migration application.
+**Durable Objects:** `ReviewStateDO` is bound at the top level and under `[env.main]` so production has an explicit binding. Migrations use tag `v1`.
 
 ---
 

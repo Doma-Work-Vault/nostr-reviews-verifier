@@ -1,5 +1,54 @@
 import { describe, expect, it, vi } from 'vitest';
 import './issuer-registry.mock';
+
+vi.mock('../src/settlement-resolver', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../src/settlement-resolver')>();
+	return {
+		...actual,
+		DynamicSettlementResolver: class StubDynamicSettlementResolver {
+			constructor(..._args: unknown[]) {}
+			async resolve(input: {
+				subjectType: string;
+				subjectId: string;
+				settlementType: string;
+				settlementId: string;
+				chain: string;
+				asset: string;
+				contractAddress: string;
+				reviewerNpub: string;
+				revieweeNpub: string;
+				reviewerWallet: string;
+				revieweeWallet: string;
+			}) {
+				return {
+					subjectType: input.subjectType,
+					subjectId: input.subjectId,
+					settlementType: input.settlementType,
+					settlementId: input.settlementId,
+					chain: input.chain,
+					asset: input.asset,
+					contractAddress: input.contractAddress,
+					contractVersion: '1',
+					reviewerRole: 'tasker' as const,
+					revieweeRole: 'taskee' as const,
+					reviewerNpub: input.reviewerNpub,
+					revieweeNpub: input.revieweeNpub,
+					reviewerWallet: input.reviewerWallet,
+					revieweeWallet: input.revieweeWallet,
+					blockchainState: 'funds_released' as const,
+					completedAt: 1000,
+					reviewableAt: 1000,
+					contractOutcome: 'completed' as const,
+					status: 'reviewable' as const,
+					sourceVisibility: 'public_present' as const,
+					sourcePresentation: {},
+					sourceRefs: {}
+				};
+			}
+		}
+	};
+});
+
 import { privateKeyToAccount } from 'viem/accounts';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools';
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
@@ -192,7 +241,7 @@ function buildService(options: {
 	const publisher = options.publisher ?? new MockReviewNostrPublisher();
 	const service = new ReviewAttestationService({
 		state,
-		settlementRegistry: {
+		settlementResolver: {
 			resolve: () => settlement
 		},
 		publisher,
@@ -556,12 +605,14 @@ describe('attestation worker hardening', () => {
 						validUntil: null
 					}
 				]),
-				REVIEW_ATTESTATION_NOSTR_RELAYS_JSON: JSON.stringify(['wss://relay.example']),
+				REVIEW_ATTESTATION_NOSTR_RELAYS: ['wss://relay.example'],
 				REVIEW_CHALLENGE_TTL_SECONDS: '30',
 				REVIEW_ATTESTATION_TTL_SECONDS: '45',
 				REVIEW_RATE_LIMIT_WINDOW_SECONDS: '12'
 			};
-			const app = createReviewsAttestationApp(undefined, { publisher });
+			const app = createReviewsAttestationApp(undefined, {
+				publisher
+			});
 
 			const reviewPayload = buildReviewFixture({
 				reviewDraftHash: '0'.repeat(64),

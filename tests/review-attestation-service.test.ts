@@ -158,7 +158,7 @@ function buildService(options: { shouldFail?: boolean; publisher?: ReviewNostrPu
 	const publisher = options.publisher ?? new MockReviewNostrPublisher(options.shouldFail);
 	const service = new ReviewAttestationService({
 		state,
-		settlementRegistry: {
+		settlementResolver: {
 			resolve: () => ({
 				...settlement,
 				reviewerNpub: reviewerPubkey,
@@ -273,7 +273,7 @@ describe('ReviewAttestationService', () => {
 		const mismatchedPubkey = getPublicKey(generateSecretKey());
 		const service = new ReviewAttestationService({
 			state,
-			settlementRegistry: {
+			settlementResolver: {
 				resolve: () => settlement
 			},
 			publisher,
@@ -308,7 +308,7 @@ describe('ReviewAttestationService', () => {
 		const issuerNpub = npubEncode(getPublicKey(new Uint8Array(Buffer.from(issuerPrivHex, 'hex'))));
 		const service = new ReviewAttestationService({
 			state,
-			settlementRegistry: {
+			settlementResolver: {
 				resolve: () => settlement
 			},
 			publisher: new MockReviewNostrPublisher(),

@@ -92,12 +92,11 @@ describe('DynamicSettlementResolver', () => {
 		revieweeWallet: TASKEE_WALLET
 	};
 
-	it('returns null when no on-chain settlement found and no fallback', async () => {
+	it('returns null when no on-chain settlement can be resolved', async () => {
 		const resolver = new DynamicSettlementResolver({
 			rpcConfig: parseRpcConfigFromEnv({}),
 			cache: new InMemorySettlementCache(),
-			cacheTtlMs: 300_000,
-			fallback: null
+			cacheTtlMs: 300_000
 		});
 
 		const result = await resolver.resolve(baseInput);
@@ -114,8 +113,7 @@ describe('DynamicSettlementResolver', () => {
 			const resolver = new DynamicSettlementResolver({
 				rpcConfig: parseRpcConfigFromEnv({}),
 				cache: new InMemorySettlementCache(),
-				cacheTtlMs: 300_000,
-				fallback: null
+				cacheTtlMs: 300_000
 			});
 
 			// Inject mock verifier
@@ -141,8 +139,7 @@ describe('DynamicSettlementResolver', () => {
 			const resolver = new DynamicSettlementResolver({
 				rpcConfig: parseRpcConfigFromEnv({}),
 				cache: new InMemorySettlementCache(),
-				cacheTtlMs: 300_000,
-				fallback: null
+				cacheTtlMs: 300_000
 			});
 
 			// Inject mock verifier
@@ -159,28 +156,19 @@ describe('DynamicSettlementResolver', () => {
 			expect(result!.revieweeRole).toBe('tasker');
 		});
 
-		it('falls back when reviewer wallet does not match either party', async () => {
+		it('returns null when reviewer wallet does not match either on-chain party', async () => {
 			const unknownWallet = '0xUNKNOWN0000000000000000000000000000000';
 			const mockVerifier = createMockVerifier({
 				taskerWallet: TASKER_WALLET,
 				taskeeWallet: TASKEE_WALLET
 			});
 
-			const fallbackRecord = makeSettlementRecord({
-				reviewerRole: 'tasker',
-				revieweeRole: 'taskee'
-			});
-
 			const resolver = new DynamicSettlementResolver({
 				rpcConfig: parseRpcConfigFromEnv({}),
 				cache: new InMemorySettlementCache(),
-				cacheTtlMs: 300_000,
-				fallback: {
-					resolve: vi.fn().mockResolvedValue(fallbackRecord)
-				}
+				cacheTtlMs: 300_000
 			});
 
-			// Inject mock verifier
 			(resolver as any).verifiers.set(`rsk:${baseInput.contractAddress.toLowerCase()}`, mockVerifier);
 
 			const result = await resolver.resolve({
@@ -189,8 +177,7 @@ describe('DynamicSettlementResolver', () => {
 				revieweeWallet: TASKEE_WALLET
 			});
 
-			// Should fall back because unknown wallet
-			expect(result).toEqual(fallbackRecord);
+			expect(result).toBeNull();
 		});
 
 		it('handles case-insensitive wallet comparison', async () => {
@@ -202,8 +189,7 @@ describe('DynamicSettlementResolver', () => {
 			const resolver = new DynamicSettlementResolver({
 				rpcConfig: parseRpcConfigFromEnv({}),
 				cache: new InMemorySettlementCache(),
-				cacheTtlMs: 300_000,
-				fallback: null
+				cacheTtlMs: 300_000
 			});
 
 			// Inject mock verifier
@@ -234,8 +220,7 @@ describe('DynamicSettlementResolver', () => {
 			const resolver = new DynamicSettlementResolver({
 				rpcConfig: parseRpcConfigFromEnv({}),
 				cache: new InMemorySettlementCache(),
-				cacheTtlMs: 300_000,
-				fallback: null
+				cacheTtlMs: 300_000
 			});
 
 			(resolver as any).verifiers.set(`rsk:${baseInput.contractAddress.toLowerCase()}`, mockVerifier);
@@ -260,8 +245,7 @@ describe('DynamicSettlementResolver', () => {
 			const resolver = new DynamicSettlementResolver({
 				rpcConfig: parseRpcConfigFromEnv({}),
 				cache: new InMemorySettlementCache(),
-				cacheTtlMs: 300_000,
-				fallback: null
+				cacheTtlMs: 300_000
 			});
 
 			// Inject mock verifier

@@ -1,6 +1,54 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createReviewsAttestationApp } from '../src/app';
 import { createInMemoryReviewStateClient, type ReviewStateNamespace } from '../src/state';
+
+vi.mock('../src/settlement-resolver', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../src/settlement-resolver')>();
+	return {
+		...actual,
+		DynamicSettlementResolver: class StubDynamicSettlementResolver {
+			constructor(..._args: unknown[]) {}
+			async resolve(input: {
+				subjectType: string;
+				subjectId: string;
+				settlementType: string;
+				settlementId: string;
+				chain: string;
+				asset: string;
+				contractAddress: string;
+				reviewerNpub: string;
+				revieweeNpub: string;
+				reviewerWallet: string;
+				revieweeWallet: string;
+			}) {
+				return {
+					subjectType: input.subjectType,
+					subjectId: input.subjectId,
+					settlementType: input.settlementType,
+					settlementId: input.settlementId,
+					chain: input.chain,
+					asset: input.asset,
+					contractAddress: input.contractAddress,
+					contractVersion: '1',
+					reviewerRole: 'client' as const,
+					revieweeRole: 'provider' as const,
+					reviewerNpub: input.reviewerNpub,
+					revieweeNpub: input.revieweeNpub,
+					reviewerWallet: input.reviewerWallet,
+					revieweeWallet: input.revieweeWallet,
+					blockchainState: 'funds_released' as const,
+					completedAt: 1000,
+					reviewableAt: 1000,
+					contractOutcome: 'completed' as const,
+					status: 'reviewable' as const,
+					sourceVisibility: 'public_present' as const,
+					sourcePresentation: {},
+					sourceRefs: {}
+				};
+			}
+		}
+	};
+});
 
 function createNamespace(state = createInMemoryReviewStateClient()): ReviewStateNamespace {
 	return {

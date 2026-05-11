@@ -10,8 +10,8 @@ REVIEW_ATTESTATION_ISSUER_NSEC=
 # Used to derive stable settlement slot identifiers without revealing settlement data.
 REVIEW_SLOT_HMAC_SECRET=229da739ed9c2a57426dc6bbddc640aba0d661c0ba1837ff8db2d86f2042f0d7
 
-# Nostr relays for publishing attestations (JSON array).
-REVIEW_ATTESTATION_NOSTR_RELAYS_JSON=["wss://relay.damus.io"]
+# Nostr relays: set only in wrangler.toml [vars] as a TOML string[] (e.g. ["wss://relay.example"]).
+# Do not set REVIEW_ATTESTATION_NOSTR_RELAYS here — .dev.vars values are plain strings and override the binding.
 
 # Allowed CORS origins (comma-separated). Required for browser access.
 ALLOWED_ORIGINS=http://localhost:3000

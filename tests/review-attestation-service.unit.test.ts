@@ -24,7 +24,7 @@ describe('ReviewAttestationService unit tests (edge cases)', () => {
 		const service = new ReviewAttestationService({
 			state,
 			publisher: new MockReviewNostrPublisher(),
-			settlementRegistry: { resolve: () => null },
+			settlementResolver: { resolve: () => null },
 			config: {
 				challengeTtlMs: 1000,
 				attestationTtlMs: 1000,
@@ -46,7 +46,7 @@ describe('ReviewAttestationService unit tests (edge cases)', () => {
 		const service = new ReviewAttestationService({
 			state: createInMemoryReviewStateClient(),
 			publisher: new MockReviewNostrPublisher(),
-			settlementRegistry: { resolve: () => null },
+			settlementResolver: { resolve: () => null },
 			config: { challengeTtlMs: 1000, attestationTtlMs: 1000, rateLimitWindowSeconds: 60 },
 			slotHmacSecret: new Uint8Array(32),
 			issuerRegistryEnv: {},
