@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --config wrangler.toml --env dev",
+    "pre-deploy:dev": "wrangler deploy --config wrangler.toml --dry-run --env dev",
     "deploy:dev": "wrangler deploy --config wrangler.toml --env dev",
-    "deploy:main": "wrangler deploy --config wrangler.toml --env main",
+    "deploy:prod": "wrangler deploy --config wrangler.toml --env main",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts"
