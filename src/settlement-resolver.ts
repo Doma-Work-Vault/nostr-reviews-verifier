@@ -1,6 +1,11 @@
-import { createPublicClient, http, type PublicClient } from 'viem';
+import { createPublicClient, getAddress, http, type PublicClient } from 'viem';
 import { rootstock } from 'viem/chains';
 import { V2_PAYMENT_STATE_ABI, LEGACY_ESCROW_ABI } from '@bittasker/reviews-contracts';
+import { fetchContractStatusEvents, type NostrQueryPool } from './nostr-status-query';
+import {
+	legacyEscrowHistoryHasFundsReleased,
+	LEGACY_ONCHAIN_COMPLETED
+} from './v1-legacy-nostr-status';
 import type {
 	ReviewBlockchainState,
 	ReviewChain,
@@ -117,24 +122,28 @@ export function parseRpcConfigFromEnv(env: Record<string, string | undefined>): 
  */
 export class ContractSettlementVerifier implements ISettlementVerifier {
 	private client: PublicClient | null = null;
+	private readonly contractAddress: string;
 
 	constructor(
-		private readonly contractAddress: string,
+		contractAddress: string,
 		private readonly chain: ReviewChain,
 		rpcUrl: string
 	) {
 		try {
+			this.contractAddress = getAddress(contractAddress.trim().toLowerCase() as `0x${string}`);
 			const chainConfig = chain === 'rsk' ? rootstock : rootstock;
 			this.client = createPublicClient({
 				chain: { ...chainConfig, name: chain === 'rsk' ? 'rsk' : 'bsc' },
 				transport: http(rpcUrl),
 				batch: { multicall: false }
 			});
-		} catch {
+		} catch (error) {
+			this.contractAddress = contractAddress.trim().toLowerCase();
 			structuredLogger.warn('Failed to create public client for settlement verifier', {
 				contractAddress,
 				chain,
-				rpcUrl
+				rpcUrl,
+				error: error instanceof Error ? error.message : 'unknown'
 			});
 		}
 	}
@@ -256,12 +265,18 @@ export interface DynamicSettlementResolverOptions {
 	rpcConfig: SettlementRpcConfig;
 	cache: SettlementCache;
 	cacheTtlMs: number;
+	/** When set, legacy v1 escrows in on-chain Completed use Kind 31006 to detect FundsReleased. */
+	nostrQuery?: {
+		pool: NostrQueryPool;
+		relays: string[];
+	};
 }
 
 /**
  * Verifies settlement state on-chain before allowing review attestation.
  *
  * Resolution: in-memory cache (TTL) → on-chain RPC (`getPaymentContractState`, then `getEscrow`).
+ * Legacy v1: when getEscrow is Completed (4), optionally fuse Kind 31006 FundsReleased (same as BitTasker UI).
  * If the chain cannot resolve the settlement, returns null (no static or off-chain fallback).
  */
 export class DynamicSettlementResolver implements SettlementResolver {
@@ -332,7 +347,7 @@ export class DynamicSettlementResolver implements SettlementResolver {
 			return null;
 		}
 
-		const blockchainState = mapOnchainStateToBlockchainState(state.state, state.detectedMethod);
+		let blockchainState = mapOnchainStateToBlockchainState(state.state, state.detectedMethod);
 		if (!blockchainState) {
 			structuredLogger.warn('Unknown on-chain state', {
 				onchainState: state.state,
@@ -342,10 +357,58 @@ export class DynamicSettlementResolver implements SettlementResolver {
 			return null;
 		}
 
+		blockchainState = await this.applyV1NostrFundsReleasedFusion(
+			input,
+			state,
+			blockchainState
+		);
+
 		// Hint for observability only — settlement uses detectedMethod + mapping, not this string
 		const contractVersion = state.detectedMethod === 'getPaymentContractState' ? 'payment' : 'legacy_escrow';
 
 		return this.buildSettlementRecord(input, state, blockchainState, contractVersion, cacheKey);
+	}
+
+	/**
+	 * v1 escrow keeps state Completed on-chain after payout; BitTasker UI uses Kind 31006 FundsReleased.
+	 */
+	private async applyV1NostrFundsReleasedFusion(
+		input: Parameters<typeof this.resolve>[0],
+		state: { state: number; detectedMethod: 'getPaymentContractState' | 'getEscrow' },
+		blockchainState: ReviewBlockchainState
+	): Promise<ReviewBlockchainState> {
+		if (state.detectedMethod !== 'getEscrow') {
+			return blockchainState;
+		}
+		if (state.state !== LEGACY_ONCHAIN_COMPLETED || blockchainState !== 'completed') {
+			return blockchainState;
+		}
+
+		const nostr = this.options.nostrQuery;
+		if (!nostr?.pool || nostr.relays.length === 0) {
+			structuredLogger.info('Skipping v1 Nostr fusion (no relay pool configured)', {
+				subjectId: input.subjectId,
+				settlementId: input.settlementId
+			});
+			return blockchainState;
+		}
+
+		const subjectId = input.subjectId?.trim();
+		if (!subjectId) {
+			return blockchainState;
+		}
+
+		const statusEvents = await fetchContractStatusEvents(nostr.pool, nostr.relays, subjectId);
+		if (!legacyEscrowHistoryHasFundsReleased(statusEvents, state.state)) {
+			return blockchainState;
+		}
+
+		structuredLogger.info('v1 legacy escrow: Nostr FundsReleased fused over on-chain Completed', {
+			subjectId,
+			settlementId: input.settlementId,
+			statusEventCount: statusEvents.length
+		});
+		return 'funds_released';
 	}
 
 	private async buildSettlementRecord(

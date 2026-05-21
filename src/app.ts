@@ -356,15 +356,18 @@ function createService(env: ReviewsAttestationEnv, options: ReviewsAttestationAp
 		BSC_TESTNET_RPC_URL: env.BSC_TESTNET_RPC_URL
 	};
 
+	const relays = trimRelayUrls(env.REVIEW_ATTESTATION_NOSTR_RELAYS);
+	const nostrQueryPool = new SimplePool({ enableReconnect: false, enablePing: false });
+
 	const settlementResolver = new DynamicSettlementResolver({
 		rpcConfig: parseRpcConfigFromEnv(rpcConfigEnv),
 		cache: new InMemorySettlementCache(),
-		cacheTtlMs: cacheTtlSeconds * 1000
+		cacheTtlMs: cacheTtlSeconds * 1000,
+		nostrQuery: relays.length > 0 ? { pool: nostrQueryPool, relays } : undefined
 	});
 
 	const publisher =
-		options.publisher ??
-		new RelayReviewNostrPublisher(trimRelayUrls(env.REVIEW_ATTESTATION_NOSTR_RELAYS), 10_000);
+		options.publisher ?? new RelayReviewNostrPublisher(relays, 10_000);
 	return new ReviewAttestationService({
 		state: new CloudflareReviewStateClient(env.REVIEW_STATE),
 		settlementResolver,

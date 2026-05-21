@@ -236,6 +236,53 @@ describe('DynamicSettlementResolver', () => {
 			expect(result!.contractVersion).toBe('legacy_escrow');
 		});
 
+		it('fuses legacy on-chain Completed with Nostr FundsReleased (s=10)', async () => {
+			const mockVerifier = createMockVerifier({
+				taskerWallet: TASKER_WALLET,
+				taskeeWallet: TASKEE_WALLET,
+				state: 4,
+				detectedMethod: 'getEscrow'
+			});
+
+			const mockPool = {
+				querySync: vi.fn().mockResolvedValue([
+					{
+						id: 'status-1',
+						created_at: 1700000000,
+						kind: 31006,
+						tags: [
+							['e', 'task-1'],
+							['s', '10'],
+							['v', '0.0.1']
+						],
+						content: '',
+						pubkey: 'a'.repeat(64),
+						sig: 'b'.repeat(128)
+					}
+				])
+			};
+
+			const resolver = new DynamicSettlementResolver({
+				rpcConfig: parseRpcConfigFromEnv({}),
+				cache: new InMemorySettlementCache(),
+				cacheTtlMs: 300_000,
+				nostrQuery: { pool: mockPool, relays: ['wss://relay.example'] }
+			});
+
+			(resolver as any).verifiers.set(`rsk:${baseInput.contractAddress.toLowerCase()}`, mockVerifier);
+
+			const result = await resolver.resolve({
+				...baseInput,
+				subjectId: 'task-1',
+				reviewerWallet: TASKER_WALLET
+			});
+
+			expect(result).not.toBeNull();
+			expect(result!.blockchainState).toBe('funds_released');
+			expect(result!.contractOutcome).toBe('completed');
+			expect(mockPool.querySync).toHaveBeenCalled();
+		});
+
 		it('preserves service_quote_contract settlement type', async () => {
 			const mockVerifier = createMockVerifier({
 				taskerWallet: TASKER_WALLET,
