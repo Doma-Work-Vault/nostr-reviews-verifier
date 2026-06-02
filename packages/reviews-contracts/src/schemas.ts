@@ -68,6 +68,19 @@ export const reviewAttachmentSchema = z
 	})
 	.strict();
 
+/** Overall rating: 1.0–5.0 with at most one decimal place (e.g. 4.7). */
+export const reviewOverallRatingSchema = z
+	.number()
+	.min(1)
+	.max(5)
+	.refine(
+		(n) => {
+			const tenths = Math.round(n * 10);
+			return tenths >= 10 && tenths <= 50 && Math.abs(n - tenths / 10) < 1e-6;
+		},
+		{ message: 'overallRating must be between 1.0 and 5.0 with at most one decimal place' }
+	);
+
 export const reviewCategoryRatingsSchema = z
 	.union([
 		z
@@ -99,7 +112,7 @@ export const reviewCategoryRatingsSchema = z
 
 export const localizedReviewCommentSchema = z
 	.object({
-		comment: z.string().trim().min(1).max(1000)
+		comment: z.string().trim().max(1000)
 	})
 	.strict();
 
@@ -131,7 +144,7 @@ export const reviewEventPayloadSchema = z
 		createdAt: unixTimestampSchema,
 		rating: z
 			.object({
-				overallRating: z.number().int().min(1).max(5),
+				overallRating: reviewOverallRatingSchema,
 				categoryRatings: reviewCategoryRatingsSchema
 			})
 			.strict(),
@@ -224,7 +237,10 @@ export const attestationChallengeResponseSchema = z
 		challengeToken: challengeTokenSchema,
 		challengeMessage: z.string().min(1).max(REVIEW_CHALLENGE_LIMITS.maxChallengeMessageLength),
 		issuedAt: unixTimestampSchema,
-		expiresAt: unixTimestampSchema
+		expiresAt: unixTimestampSchema,
+		contractOutcome: reviewContractOutcomeSchema,
+		reviewerRole: reviewRoleSchema,
+		revieweeRole: reviewRoleSchema
 	})
 	.strict()
 	.superRefine((value, ctx) => {
@@ -295,10 +311,12 @@ export const attestationEventPayloadSchema = z
 		issuedAt: unixTimestampSchema,
 		expiresAt: unixTimestampSchema,
 		keyId: z.string().min(1),
-		rating: z.object({
-			overallRating: z.number().int().min(1).max(5),
-			categoryRatings: reviewCategoryRatingsSchema
-		}).optional(),
+		rating: z
+			.object({
+				overallRating: reviewOverallRatingSchema,
+				categoryRatings: reviewCategoryRatingsSchema
+			})
+			.optional(),
 		comment: z.string().optional()
 	})
 	.strict()

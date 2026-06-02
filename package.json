@@ -13,7 +13,7 @@
     "test:watch": "vitest --config vitest.config.ts"
   },
   "dependencies": {
-    "@bittasker/reviews-contracts": "^0.0.1",
+    "@bittasker/reviews-contracts": "^0.0.2",
     "@noble/curves": "^1.9.2",
     "@noble/hashes": "^1.8.0",
     "hono": "^4.6.20",
@@ -26,7 +26,7 @@
     "@hono/zod-openapi": "^0.18.4",
     "@types/node": "^22.13.1",
     "typescript": "^5.8.2",
-    "vitest": "^3.0.8",
+    "vitest": "^4.1.8",
     "wrangler": "^4.87.0"
   }
 }

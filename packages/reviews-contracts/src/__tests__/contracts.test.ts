@@ -173,6 +173,52 @@ describe('reviews contracts package', () => {
 		).toThrow();
 	});
 
+	it('accepts one-decimal overall ratings and optional empty comments', async () => {
+		const { reviewDraftHash: _ignore, ...forHash } = buildReviewFixture({
+			reviewDraftHash: '0'.repeat(64),
+			rating: {
+				overallRating: 4.7,
+				categoryRatings: {
+					workQuality: 5,
+					experience: 4,
+					deliverySpeed: 5
+				}
+			},
+			content: {
+				sourceLanguage: 'en',
+				en: { comment: '' },
+				es: { comment: '' }
+			}
+		});
+		const hash = await computeReviewDraftHash(forHash);
+		const payload = { ...forHash, reviewDraftHash: hash };
+		expect(() => reviewEventPayloadSchema.parse(payload)).not.toThrow();
+		expect(await verifyReviewDraftHash(payload)).toBe(true);
+	});
+
+	it('rejects invalid overall rating precision', () => {
+		expect(() =>
+			reviewEventPayloadSchema.parse(
+				buildReviewFixture({
+					rating: {
+						overallRating: 4.77,
+						categoryRatings: {
+							workQuality: 5,
+							experience: 5,
+							deliverySpeed: 5
+						}
+					}
+				})
+			)
+		).toThrow();
+	});
+
+	it('validates challenge response settlement metadata', () => {
+		expect(() =>
+			attestationChallengeResponseSchema.parse(buildChallengeResponseFixture())
+		).not.toThrow();
+	});
+
 	it('selects the earliest valid reply and rejects non-owner replies', () => {
 		const winner = selectCanonicalReviewReply([
 			buildReviewReplyCandidateFixture({ eventId: 'b'.repeat(64), createdAt: 20 }),

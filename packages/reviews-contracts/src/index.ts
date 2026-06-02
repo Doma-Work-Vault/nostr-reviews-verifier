@@ -28,6 +28,7 @@ export {
 } from './canonical';
 export * from './reply';
 export * from './status';
+export * from './settlement-outcome';
 export { 
 	V2_PAYMENT_STATE_ABI, 
 	LEGACY_ESCROW_ABI, 

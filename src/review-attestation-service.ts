@@ -260,7 +260,10 @@ export class ReviewAttestationService {
 			challengeToken,
 			challengeMessage,
 			issuedAt: payload.issuedAt,
-			expiresAt: payload.expiresAt
+			expiresAt: payload.expiresAt,
+			contractOutcome: settlement.contractOutcome,
+			reviewerRole: settlement.reviewerRole,
+			revieweeRole: settlement.revieweeRole
 		};
 	}
 

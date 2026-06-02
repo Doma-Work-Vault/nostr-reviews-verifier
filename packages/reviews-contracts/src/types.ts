@@ -118,6 +118,9 @@ export interface ReviewChallengeResponse {
 	challengeMessage: string;
 	issuedAt: number;
 	expiresAt: number;
+	contractOutcome: ReviewContractOutcome;
+	reviewerRole: ReviewRole;
+	revieweeRole: ReviewRole;
 }
 
 export interface NostrEventLike {

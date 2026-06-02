@@ -86,6 +86,14 @@ const issuerRegistryRoute = createRoute({
 					schema: issuerRegistryOpenApiSchema
 				}
 			}
+		},
+		503: {
+			description: 'Issuer registry unavailable',
+			content: {
+				'application/json': {
+					schema: reviewErrorResponseSchema
+				}
+			}
 		}
 	}
 });
@@ -169,13 +177,24 @@ export function createReviewsAttestationApp(
 				...c.env,
 				clock: () => Date.now()
 			});
-			return c.json(registry);
+			return c.json(registry, 200);
 		} catch (error) {
-			return respondWithServiceError(c, new ReviewApiError(
-				'issuer_unavailable',
-				503,
-				error instanceof Error ? error.message : 'Issuer registry unavailable'
-			))
+			const message =
+				error instanceof Error ? error.message : 'Issuer registry unavailable';
+			structuredLogger.error(`ReviewApiError: issuer_unavailable`, error instanceof Error ? error : undefined, {
+				code: 'issuer_unavailable',
+				status: 503,
+				message
+			});
+			return c.json(
+				reviewErrorResponseSchema.parse({
+					schemaVersion: 1,
+					status: 'error',
+					code: 'issuer_unavailable',
+					message
+				}),
+				503
+			);
 		}
 	});
 

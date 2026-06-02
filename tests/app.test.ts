@@ -102,32 +102,60 @@ const realPubHex = toHex(getPublicKey(realPriv));
 const realNpub = npubEncode(realPubHex);
 const dummyWallet = '0x1111111111111111111111111111111111111111';
 
-function createValidSettlement(overrides = {}) {
-    return {
-        subjectType: 'task',
-        subjectId: 't1',
-        settlementType: 'escrow',
-        settlementId: 's1',
-        chain: 'rsk',
-        asset: 'rbtc',
-        contractAddress: dummyWallet,
-        contractVersion: '1',
-        reviewerRole: 'client',
-        revieweeRole: 'provider',
-        reviewerNpub: realNpub,
-        revieweeNpub: realNpub,
-        reviewerWallet: dummyWallet,
-        revieweeWallet: dummyWallet,
-        blockchainState: 'funds_released', // VALID for 'completed' outcome
-        completedAt: 1000,
-        reviewableAt: 1000,
-        contractOutcome: 'completed',
-        status: 'reviewable',
-        sourceVisibility: 'public_present',
-        sourcePresentation: { label: 'Task' },
-        sourceRefs: { escrowId: 'e1' },
-        ...overrides
-    };
+type ValidSettlementFixture = {
+	subjectType: 'task';
+	subjectId: string;
+	settlementType: 'escrow';
+	settlementId: string;
+	chain: 'rsk';
+	asset: 'rbtc';
+	contractAddress: string;
+	contractVersion: string;
+	reviewerRole: 'client';
+	revieweeRole: 'provider';
+	reviewerNpub: string;
+	revieweeNpub: string;
+	reviewerWallet: string;
+	revieweeWallet: string;
+	blockchainState: 'funds_released';
+	completedAt: number;
+	reviewableAt: number;
+	contractOutcome: 'completed';
+	status: 'reviewable';
+	sourceVisibility: 'public_present';
+	sourcePresentation: { label: string };
+	sourceRefs: { escrowId: string };
+	revieweePubkey?: string;
+};
+
+function createValidSettlement(
+	overrides: Partial<ValidSettlementFixture> = {}
+): ValidSettlementFixture {
+	return {
+		subjectType: 'task',
+		subjectId: 't1',
+		settlementType: 'escrow',
+		settlementId: 's1',
+		chain: 'rsk',
+		asset: 'rbtc',
+		contractAddress: dummyWallet,
+		contractVersion: '1',
+		reviewerRole: 'client',
+		revieweeRole: 'provider',
+		reviewerNpub: realNpub,
+		revieweeNpub: realNpub,
+		reviewerWallet: dummyWallet,
+		revieweeWallet: dummyWallet,
+		blockchainState: 'funds_released',
+		completedAt: 1000,
+		reviewableAt: 1000,
+		contractOutcome: 'completed',
+		status: 'reviewable',
+		sourceVisibility: 'public_present',
+		sourcePresentation: { label: 'Task' },
+		sourceRefs: { escrowId: 'e1' },
+		...overrides
+	};
 }
 
 describe('reviews attestation backend app', () => {

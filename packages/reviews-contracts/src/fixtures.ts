@@ -148,6 +148,9 @@ export function buildChallengeResponseFixture(
 		}),
 		issuedAt: 1_700_000_000,
 		expiresAt: 1_700_000_300,
+		contractOutcome: 'completed',
+		reviewerRole: 'tasker',
+		revieweeRole: 'taskee',
 		...overrides
 	};
 }
